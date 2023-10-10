@@ -1,30 +1,11 @@
-# mailcow: dockerized - 🐮 + 🐋 = 💕
+tsg-mailcow is intended to be a simple and compatible successor of [mailcow-mailman3-dockerized](https://github.com/Shadowghost/mailcow-mailman3-dockerized).
+ 
+Reasons for this are: 
+- mailcow-mailman3-dockerized is abandoned
+- mailcow-mailman3-dockerized is based on mailcow, but can't be updated like mailcow
+ 
+So tsg-mailcow utilizes the following approach to overcome this:
+- the master branch is mailcow upstream
+- the mailman3 branch starts at mailcow commit 477e4dab13cf164340aaea05a6a2e79744a43b04. The first commit is intended to match the mailcow-mailman3-dockerized branch at commit 7c9e89dce588568c5b528b3b9d0e01f42e485952 as close as possible, without introducing obvious bugs included there. See also at [Commit 7c9e89dce588568c5b528b3b9d0e01f42e485952 of mailcow-mailman3-dockerized](https://github.com/Shadowghost/mailcow-mailman3-dockerized/tree/7c9e89dce588568c5b528b3b9d0e01f42e485952)
+- the mailman3 branch shall take all changes needed for running mailman.
 
-## Want to support mailcow?
-
-Please [consider a support contract with Servercow](https://www.servercow.de/mailcow?lang=en#support) to support further development. _We_ support _you_ while _you_ support _us_. :)
-
-You can also [get a SAL](https://www.servercow.de/mailcow?lang=en#sal) which is a one-time payment with no liabilities or returning fees.
-
-Or just spread the word: moo.
-
-## Info, documentation and support
-
-Please see [the official documentation](https://mailcow.github.io/mailcow-dockerized-docs/) for installation and support instructions. 🐄
-
-🐛 **If you found a critical security issue, please mail us to [info at servercow.de](mailto:info@servercow.de).**
-
-## Cowmunity
-
-[mailcow community](https://community.mailcow.email)
-
-[Telegram mailcow channel](https://telegram.me/mailcow)
-
-[Telegram mailcow Off-Topic channel](https://t.me/mailcowOfftopic)
-
-Telegram desktop clients are available for [multiple platforms](https://desktop.telegram.org). You can search the groups history for keywords.
-
-## Misc
-
-**Important**: mailcow makes use of various open-source software. Please assure you agree with their license before using mailcow.
-Any part of mailcow itself is released under **GNU General Public License, Version 3**.

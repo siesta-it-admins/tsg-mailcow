@@ -48,6 +48,18 @@ while [ -z "${MAILCOW_HOSTNAME}" ]; do
   fi
 done
 
+if [ -z "$DOMAINNAME" ]; then
+  read -p "Domainname which servers mailman3: " -ei "example.org" DOMAINNAME
+fi
+
+if [ -z "$HOSTNAME" ]; then
+  read -p "Hostname for mailman3 containers (if nothing special, use the mailcow subdomain): " -ei "mail" HOSTNAME
+fi
+
+if [ -z "$PN" ]; then
+  read -p "Project name: " -ei "mailcowdockerized" PN
+fi
+
 if [ -a /etc/timezone ]; then
   DETECTED_TZ=$(cat /etc/timezone)
 elif [ -a /etc/localtime ]; then
@@ -112,18 +124,28 @@ cat << EOF > mailcow.conf
 # Default password is "moohoo"
 
 MAILCOW_HOSTNAME=${MAILCOW_HOSTNAME}
+DOMAINNAME=${DOMAINNAME}
+HOSTNAME=${HOSTNAME}
 
-# ------------------------------
-# SQL database configuration
-# ------------------------------
+# ------------------------------------
+# Mailcow SQL database configuration
+# ------------------------------------
 
-DBNAME=mailcow
-DBUSER=mailcow
+MCDBNAME=mailcow
+MCDBUSER=mailcow
 
 # Please use long, random alphanumeric strings (A-Za-z0-9)
 
-DBPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
-DBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+MCDBPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+MCDBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+
+# ------------------------------------
+# Mailman3 configuration
+# ------------------------------------
+HKAPIKEY=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+MMDBPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+MMDBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
+DJSECRET=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
 
 # ------------------------------
 # HTTP/S Bindings
@@ -135,11 +157,11 @@ DBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 | head -c 28)
 # Do _not_ use IP:PORT in HTTP(S)_BIND or HTTP(S)_PORT
 # IMPORTANT: Do not use port 8081, 9081 or 65510!
 
-HTTP_PORT=80
-HTTP_BIND=0.0.0.0
+HTTP_PORT=8080
+HTTP_BIND=127.0.0.1
 
-HTTPS_PORT=443
-HTTPS_BIND=0.0.0.0
+HTTPS_PORT=8443
+HTTPS_BIND=127.0.0.1
 
 # ------------------------------
 # Other bindings
@@ -200,7 +222,7 @@ ADDITIONAL_SAN=
 
 # Skip running ACME (acme-mailcow, Let's Encrypt certs) - y/n
 
-SKIP_LETS_ENCRYPT=n
+SKIP_LETS_ENCRYPT=y
 
 # Create seperate certificates for all domains - y/n
 # this will allow adding more than 100 domains, but some email clients will not be able to connect with alternative hostnames
@@ -305,5 +327,7 @@ mkdir -p data/assets/ssl
 
 chmod 600 mailcow.conf
 
+echo "Create mailman volume and selfsigned SSL-certificates until new ones are installed."
+docker volume create "${PN}"_mailman-core-vol-1
 # copy but don't overwrite existing certificate
 cp -n -d data/assets/ssl-example/*.pem data/assets/ssl/
