@@ -24,6 +24,7 @@ done
 CONTAINER_ID=
 until [[ ! -z "${CONTAINER_ID}" ]] && [[ "${CONTAINER_ID}" =~ ^[[:alnum:]]*$ ]]; do
   CONTAINER_ID=$(curl --silent --insecure https://dockerapi/containers/json | jq -r ".[] | {name: .Config.Labels[\"com.docker.compose.service\"], project: .Config.Labels[\"com.docker.compose.project\"], id: .Id}" 2> /dev/null | jq -rc "select( .name | tostring | contains(\"mysql-mailcow\")) | select( .project | tostring | contains(\"${COMPOSE_PROJECT_NAME,,}\")) | .id" 2> /dev/null)
+  sleep 2
 done
 echo "MySQL @ ${CONTAINER_ID}"
 SQL_LOOP_C=0
@@ -87,6 +88,15 @@ if [[ "${MASTER}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
   # Set max age of q items - if unset
   if [[ -z $(${REDIS_CMDLINE} --raw GET Q_MAX_AGE) ]]; then
     ${REDIS_CMDLINE} --raw SET Q_MAX_AGE 365
+  fi
+
+  # Set default password policy - if unset
+  if [[ -z $(${REDIS_CMDLINE} --raw HGET PASSWD_POLICY length) ]]; then
+    ${REDIS_CMDLINE} --raw HSET PASSWD_POLICY length 6
+    ${REDIS_CMDLINE} --raw HSET PASSWD_POLICY chars 0
+    ${REDIS_CMDLINE} --raw HSET PASSWD_POLICY special_chars 0
+    ${REDIS_CMDLINE} --raw HSET PASSWD_POLICY lowerupper 0
+    ${REDIS_CMDLINE} --raw HSET PASSWD_POLICY numbers 0
   fi
 
   # Trigger db init
@@ -162,6 +172,24 @@ BEGIN
 END;
 //
 DELIMITER ;
+DROP EVENT IF EXISTS clean_sasl_log;
+DELIMITER //
+CREATE EVENT clean_sasl_log
+ON SCHEDULE EVERY 1 DAY DO
+BEGIN
+  DELETE sasl_log.* FROM sasl_log
+    LEFT JOIN (
+      SELECT username, service, MAX(datetime) AS lastdate
+      FROM sasl_log
+      GROUP BY username, service
+    ) AS last ON sasl_log.username = last.username AND sasl_log.service = last.service
+    WHERE datetime < DATE_SUB(NOW(), INTERVAL 31 DAY) AND datetime < lastdate;
+  DELETE FROM sasl_log
+    WHERE username NOT IN (SELECT username FROM mailbox) AND
+    datetime < DATE_SUB(NOW(), INTERVAL 31 DAY);
+END;
+//
+DELIMITER ;
 EOF
 fi
 
@@ -170,6 +198,11 @@ fi
 
 # Fix permissions for global filters
 chown -R 82:82 /global_sieve/*
+
+# Fix permissions on twig cache folder
+chown -R 82:82 /web/templates/cache
+# Clear cache
+find /web/templates/cache/* -not -name '.gitkeep' -delete
 
 # Run hooks
 for file in /hooks/*; do

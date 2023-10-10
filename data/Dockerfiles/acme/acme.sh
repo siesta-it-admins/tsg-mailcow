@@ -44,11 +44,23 @@ if [[ "${SKIP_LETS_ENCRYPT}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
   exec $(readlink -f "$0")
 fi
 
-log_f "Waiting for Docker API..." no_nl
+log_f "Waiting for Docker API..."
 until ping dockerapi -c1 > /dev/null; do
   sleep 1
 done
-log_f "OK" no_date
+log_f "Docker API OK"
+
+log_f "Waiting for Postfix..."
+until ping postfix -c1 > /dev/null; do
+  sleep 1
+done
+log_f "Postfix OK"
+
+log_f "Waiting for Dovecot..."
+until ping dovecot -c1 > /dev/null; do
+  sleep 1
+done
+log_f "Dovecot OK"
 
 ACME_BASE=/var/lib/acme
 SSL_EXAMPLE=/var/lib/ssl-example
@@ -60,7 +72,7 @@ mkdir -p ${ACME_BASE}/acme
 [[ -f ${ACME_BASE}/acme/private/account.key ]] && mv ${ACME_BASE}/acme/private/account.key ${ACME_BASE}/acme/account.pem
 if [[ -f ${ACME_BASE}/acme/key.pem && -f ${ACME_BASE}/acme/cert.pem ]]; then
   if verify_hash_match ${ACME_BASE}/acme/cert.pem ${ACME_BASE}/acme/key.pem; then
-    log_f "Migrating to SNI folder structure..." no_nl
+    log_f "Migrating to SNI folder structure..."
     CERT_DOMAIN=($(openssl x509 -noout -text -in ${ACME_BASE}/acme/cert.pem | grep "Subject:" | sed -e 's/\(Subject:\)\|\(CN = \)\|\(CN=\)//g' | sed -e 's/^[[:space:]]*//'))
     CERT_DOMAINS=(${CERT_DOMAIN} $(openssl x509 -noout -text -in ${ACME_BASE}/acme/cert.pem | grep "DNS:" | sed -e 's/\(DNS:\)\|,//g' | sed "s/${CERT_DOMAIN}//" | sed -e 's/^[[:space:]]*//'))
     mkdir -p ${ACME_BASE}/${CERT_DOMAIN}
@@ -100,20 +112,26 @@ fi
 
 chmod 600 ${ACME_BASE}/key.pem
 
-log_f "Waiting for database... " no_nl
-while ! mysqladmin status --socket=/var/run/mysqld/mysqld.sock -u${DBUSER} -p${DBPASS} --silent; do
+log_f "Waiting for database..."
+while ! mysqladmin status --socket=/var/run/mysqld/mysqld.sock -u${DBUSER} -p${DBPASS} --silent > /dev/null; do
   sleep 2
 done
-log_f "OK" no_date
+log_f "Database OK"
 
-log_f "Waiting for Nginx... " no_nl
+log_f "Waiting for Nginx..."
 until $(curl --output /dev/null --silent --head --fail http://nginx:8081); do
   sleep 2
 done
-log_f "OK" no_date
+log_f "Nginx OK"
+
+log_f "Waiting for resolver..."
+until dig letsencrypt.org +time=3 +tries=1 @unbound > /dev/null; do
+  sleep 2
+done
+log_f "Resolver OK"
 
 # Waiting for domain table
-log_f "Waiting for domain table... " no_nl
+log_f "Waiting for domain table..."
 while [[ -z ${DOMAIN_TABLE} ]]; do
   curl --silent http://nginx/ >/dev/null 2>&1
   DOMAIN_TABLE=$(mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -e "SHOW TABLES LIKE 'domain'" -Bs)
@@ -121,10 +139,13 @@ while [[ -z ${DOMAIN_TABLE} ]]; do
 done
 log_f "OK" no_date
 
-log_f "Initializing, please wait... "
+log_f "Initializing, please wait..."
 
 while true; do
-
+  POSTFIX_CERT_SERIAL="$(echo | openssl s_client -connect postfix:25 -starttls smtp 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
+  DOVECOT_CERT_SERIAL="$(echo | openssl s_client -connect dovecot:143 -starttls imap 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
+  POSTFIX_CERT_SERIAL_NEW="$(echo | openssl s_client -connect postfix:25 -starttls smtp 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
+  DOVECOT_CERT_SERIAL_NEW="$(echo | openssl s_client -connect dovecot:143 -starttls imap 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
   # Re-using previous acme-mailcow account and domain keys
   if [[ ! -f ${ACME_BASE}/acme/key.pem ]]; then
     log_f "Generating missing domain private rsa key..."
@@ -134,6 +155,18 @@ while true; do
   fi
   if [[ ! -f ${ACME_BASE}/acme/account.pem ]]; then
     log_f "Generating missing Lets Encrypt account key..."
+    if [[ ! -z ${ACME_CONTACT} ]]; then
+      if ! verify_email "${ACME_CONTACT}"; then
+        log_f "Invalid email address, will not start registration!"
+        sleep 365d
+        exec $(readlink -f "$0")
+      else
+        ACME_CONTACT_PARAMETER="--contact mailto:${ACME_CONTACT}"
+        log_f "Valid email address, using ${ACME_CONTACT} for registration"
+      fi
+    else
+      ACME_CONTACT_PARAMETER=""
+    fi
     openssl genrsa 4096 > ${ACME_BASE}/acme/account.pem
   else
     log_f "Using existing Lets Encrypt account key ${ACME_BASE}/acme/account.pem"
@@ -180,28 +213,17 @@ while true; do
   done
   ADDITIONAL_WC_ARR+=('autodiscover' 'autoconfig')
 
+  if [[ ${SKIP_IP_CHECK} != "y" ]]; then
   # Start IP detection
-  log_f "Detecting IP addresses... " no_nl
+  log_f "Detecting IP addresses..."
   IPV4=$(get_ipv4)
   IPV6=$(get_ipv6)
-  log_f "OK" no_date
-
-  # Hard-fail on CAA errors for MAILCOW_HOSTNAME
-  MH_PARENT_DOMAIN=$(echo ${MAILCOW_HOSTNAME} | cut -d. -f2-)
-  MH_CAAS=( $(dig CAA ${MH_PARENT_DOMAIN} +short | sed -n 's/\d issue "\(.*\)"/\1/p') )
-  if [[ ! -z ${MH_CAAS} ]]; then
-    if [[ ${MH_CAAS[@]} =~ "letsencrypt.org" ]]; then
-      log_f "Validated CAA for parent domain ${MH_PARENT_DOMAIN}"
-    else
-      log_f "Skipping ACME validation: Lets Encrypt disallowed for ${MAILCOW_HOSTNAME} by CAA record, retrying in 1h..."
-      sleep 1h
-      exec $(readlink -f "$0")
-    fi
+  log_f "OK: ${IPV4}, ${IPV6:-"0000:0000:0000:0000:0000:0000:0000:0000"}"
   fi
 
   #########################################
   # IP and webroot challenge verification #
-  SQL_DOMAINS=$(mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -e "SELECT domain FROM domain WHERE backupmx=0" -Bs)
+  SQL_DOMAINS=$(mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -e "SELECT domain FROM domain WHERE backupmx=0 and active=1" -Bs)
   if [[ ! $? -eq 0 ]]; then
     log_f "Failed to read SQL domains, retrying in 1 minute..."
     sleep 1m
@@ -269,7 +291,7 @@ while true; do
     VALIDATED_CERTIFICATES+=("${CERT_NAME}")
 
     # obtain server certificate if required
-    DOMAINS=${SERVER_SAN_VALIDATED[@]} /srv/obtain-certificate.sh rsa
+    ACME_CONTACT_PARAMETER=${ACME_CONTACT_PARAMETER} DOMAINS=${SERVER_SAN_VALIDATED[@]} /srv/obtain-certificate.sh rsa
     RETURN="$?"
     if [[ "$RETURN" == "0" ]]; then # 0 = cert created successfully
       CERT_AMOUNT_CHANGED=1
@@ -282,8 +304,11 @@ while true; do
       CERT_ERRORS=1
     fi
     # copy hostname certificate to default/server certificate
-    cp ${ACME_BASE}/${CERT_NAME}/cert.pem ${ACME_BASE}/cert.pem
-    cp ${ACME_BASE}/${CERT_NAME}/key.pem ${ACME_BASE}/key.pem
+    # do not a key when cert is missing, this can lead to a mismatch of cert/key
+    if [[ -f ${ACME_BASE}/${CERT_NAME}/cert.pem ]]; then
+      cp ${ACME_BASE}/${CERT_NAME}/cert.pem ${ACME_BASE}/cert.pem
+      cp ${ACME_BASE}/${CERT_NAME}/key.pem ${ACME_BASE}/key.pem
+    fi
   fi
 
   # individual certificates for SNI [@]
@@ -351,7 +376,27 @@ while true; do
   # reload on new or changed certificates
   if [[ "${CERT_CHANGED}" == "1" ]]; then
     rm -f "${ACME_BASE}/force_renew" 2> /dev/null
-    CERT_AMOUNT_CHANGED=${CERT_AMOUNT_CHANGED} /srv/reload-configurations.sh
+    RELOAD_LOOP_C=1
+    while [[ "${POSTFIX_CERT_SERIAL}" == "${POSTFIX_CERT_SERIAL_NEW}" ]] || [[ "${DOVECOT_CERT_SERIAL}" == "${DOVECOT_CERT_SERIAL_NEW}" ]] || [[ ${#POSTFIX_CERT_SERIAL_NEW} -ne 36 ]] || [[ ${#DOVECOT_CERT_SERIAL_NEW} -ne 36 ]]; do
+      log_f "Reloading or restarting services... (${RELOAD_LOOP_C})"
+      RELOAD_LOOP_C=$((RELOAD_LOOP_C + 1))
+      CERT_AMOUNT_CHANGED=${CERT_AMOUNT_CHANGED} /srv/reload-configurations.sh
+      log_f "Waiting for containers to settle..."
+      sleep 10
+      until nc -z dovecot 143; do
+        sleep 1
+      done
+      until nc -z postfix 25; do
+        sleep 1
+      done
+      POSTFIX_CERT_SERIAL_NEW="$(echo | openssl s_client -connect postfix:25 -starttls smtp 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
+      DOVECOT_CERT_SERIAL_NEW="$(echo | openssl s_client -connect dovecot:143 -starttls imap 2>/dev/null | openssl x509 -inform pem -noout -serial | cut -d "=" -f 2)"
+      if [[ ${RELOAD_LOOP_C} -gt 3 ]]; then
+        log_f "Some services do return old end dates, something went wrong!"
+        ${REDIS_CMDLINE} SET ACME_FAIL_TIME "$(date +%s)"
+        break;
+      fi
+    done
   fi
 
   case "$CERT_ERRORS" in

@@ -2,7 +2,8 @@ FROM solr:7.7-slim
 
 USER root
 
-ENV GOSU_VERSION 1.11
+# renovate: datasource=github-releases depName=tianon/gosu versioning=semver-coerced
+ARG GOSU_VERSION=1.16
 
 COPY solr.sh /
 COPY solr-config-7.7.0.xml /
@@ -16,10 +17,15 @@ RUN dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
   tzdata \
   curl \
   bash \
+  zip \
   && apt-get autoclean \
   && rm -rf /var/lib/apt/lists/* \
   && chmod +x /solr.sh \
   && sync \
   && bash /solr.sh --bootstrap
+  
+RUN zip -q -d /opt/solr/server/lib/ext/log4j-core-*.jar org/apache/logging/log4j/core/lookup/JndiLookup.class
+
+RUN apt remove zip -y  
 
 CMD ["/solr.sh"]

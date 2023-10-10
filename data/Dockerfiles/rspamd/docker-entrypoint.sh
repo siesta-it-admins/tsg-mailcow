@@ -59,11 +59,11 @@ write_servers = "${REDIS_SLAVEOF_IP}:${REDIS_SLAVEOF_PORT}";
 timeout = 10;
 EOF
   until [[ $(redis-cli -h redis-mailcow PING) == "PONG" ]]; do
-    echo "Waiting for Redis slave..."
+    echo "Waiting for Redis @redis-mailcow..."
     sleep 2
   done
   until [[ $(redis-cli -h ${REDIS_SLAVEOF_IP} -p ${REDIS_SLAVEOF_PORT} PING) == "PONG" ]]; do
-    echo "Waiting for Redis master..."
+    echo "Waiting for Redis @${REDIS_SLAVEOF_IP}..."
     sleep 2
   done
   redis-cli -h redis-mailcow SLAVEOF ${REDIS_SLAVEOF_IP} ${REDIS_SLAVEOF_PORT}
@@ -104,7 +104,8 @@ touch /etc/rspamd/custom/global_mime_from_blacklist.map \
   /etc/rspamd/custom/bad_words.map \
   /etc/rspamd/custom/bad_asn.map \
   /etc/rspamd/custom/bad_words_de.map \
-  /etc/rspamd/custom/bulk_header.map
+  /etc/rspamd/custom/bulk_header.map \
+  /etc/rspamd/custom/bad_header.map
 
 # www-data (82) group needs to write to these files
 chown _rspamd:_rspamd /etc/rspamd/custom/

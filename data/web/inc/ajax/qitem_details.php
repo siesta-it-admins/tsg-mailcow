@@ -1,5 +1,4 @@
 <?php
-session_start();
 header("Content-Type: application/json");
 require_once $_SERVER['DOCUMENT_ROOT'] . '/inc/prerequisites.inc.php';
 
@@ -61,9 +60,13 @@ if (!empty($_GET['hash']) && ctype_alnum($_GET['hash'])) {
     $data['env_from'] = $mailc['sender'];
     // Get rspamd score
     $data['score'] = $mailc['score'];
+    // Get rspamd action
+    $data['action'] = $mailc['action'];
     // Get rspamd symbols
     $data['symbols'] = json_decode($mailc['symbols']);
-    $data['subject'] = $mail_parser->getHeader('subject');
+    // Get fuzzy hashes
+    $data['fuzzy_hashes'] = json_decode($mailc['fuzzy_hashes']);
+    $data['subject'] = mb_convert_encoding($mail_parser->getHeader('subject'), "UTF-8", "auto");
     (empty($data['subject'])) ? $data['subject'] = '-' : null;
     echo json_encode($data);
   }
@@ -116,10 +119,15 @@ elseif (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
     $data['env_from'] = $mailc['sender'];
     // Get rspamd score
     $data['score'] = $mailc['score'];
+    // Get rspamd action
+    $data['action'] = $mailc['action'];
     // Get rspamd symbols
     $data['symbols'] = json_decode($mailc['symbols']);
+    // Get fuzzy hashes
+    $data['fuzzy_hashes'] = json_decode($mailc['fuzzy_hashes']);
     // Get text/plain content
     $data['text_plain'] = $mail_parser->getMessageBody('text');
+    if (!json_encode($data['text_plain'])) $data['text_plain'] = '';
     // Get html content and convert to text
     $data['text_html'] = $html2text->convert($mail_parser->getMessageBody('html'));
     if (empty($data['text_plain']) && empty($data['text_html'])) {
@@ -132,6 +140,7 @@ elseif (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
     (empty($data['text_plain'])) ? $data['text_plain'] = '-' : null;
     // Get subject
     $data['subject'] = $mail_parser->getHeader('subject');
+    $data['subject'] = mb_convert_encoding($mail_parser->getHeader('subject'), "UTF-8", "auto");
     (empty($data['subject'])) ? $data['subject'] = '-' : null;
     // Get attachments
     if (is_dir($tmpdir)) {
@@ -175,14 +184,16 @@ elseif (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
       }
       $dl_id = intval($_GET['att']);
       $dl_filename = filter_var($data['attachments'][$dl_id][0], FILTER_SANITIZE_STRING);
-      $dl_filename = strlen($dl_filename) > 30 ? substr($dl_filename,0,30) : $dl_filename;
+      $dl_filename_short = strlen($dl_filename) > 20 ? substr($dl_filename, 0, 20) : $dl_filename;
+      $dl_filename_extension = pathinfo($tmpdir . $dl_filename)['extension'];
+      $dl_filename_short = preg_replace('/\.' . $dl_filename_extension . '$/', '', $dl_filename_short);
       if (!is_dir($tmpdir . $dl_filename) && file_exists($tmpdir . $dl_filename)) {
         header('Pragma: public');
         header('Expires: 0');
         header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
         header('Cache-Control: private', false);
         header('Content-Type: ' . $data['attachments'][$dl_id][1]);
-        header('Content-Disposition: attachment; filename="'. $dl_filename . '";');
+        header('Content-Disposition: attachment; filename="'. $dl_filename_short . '.' . $dl_filename_extension . '";');
         header('Content-Transfer-Encoding: binary');
         header('Content-Length: ' . $data['attachments'][$dl_id][2]);
         readfile($tmpdir . $dl_filename);
@@ -191,5 +202,6 @@ elseif (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
     }
     echo json_encode($data);
   }
+
 }
 ?>

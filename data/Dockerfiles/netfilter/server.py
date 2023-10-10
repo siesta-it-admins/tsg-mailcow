@@ -2,6 +2,7 @@
 
 import re
 import os
+import sys
 import time
 import atexit
 import signal
@@ -39,6 +40,7 @@ BLACKLIST= []
 bans = {}
 
 quit_now = False
+exit_code = 0
 lock = Lock()
 
 def log(priority, message):
@@ -61,40 +63,57 @@ def logInfo(message):
 def refreshF2boptions():
   global f2boptions
   global quit_now
+  global exit_code
+
+  f2boptions = {}
+
   if not r.get('F2B_OPTIONS'):
-    f2boptions = {}
-    f2boptions['ban_time'] = int
-    f2boptions['max_attempts'] = int
-    f2boptions['retry_window'] = int
-    f2boptions['netban_ipv4'] = int
-    f2boptions['netban_ipv6'] = int
-    f2boptions['ban_time'] = r.get('F2B_BAN_TIME') or 1800
-    f2boptions['max_attempts'] = r.get('F2B_MAX_ATTEMPTS') or 10
-    f2boptions['retry_window'] = r.get('F2B_RETRY_WINDOW') or 600
-    f2boptions['netban_ipv4'] = r.get('F2B_NETBAN_IPV4') or 32
-    f2boptions['netban_ipv6'] = r.get('F2B_NETBAN_IPV6') or 128
-    r.set('F2B_OPTIONS', json.dumps(f2boptions, ensure_ascii=False))
+    f2boptions['ban_time'] = r.get('F2B_BAN_TIME')
+    f2boptions['max_ban_time'] = r.get('F2B_MAX_BAN_TIME')
+    f2boptions['ban_time_increment'] = r.get('F2B_BAN_TIME_INCREMENT')
+    f2boptions['max_attempts'] = r.get('F2B_MAX_ATTEMPTS')
+    f2boptions['retry_window'] = r.get('F2B_RETRY_WINDOW')
+    f2boptions['netban_ipv4'] = r.get('F2B_NETBAN_IPV4')
+    f2boptions['netban_ipv6'] = r.get('F2B_NETBAN_IPV6')
   else:
     try:
-      f2boptions = {}
       f2boptions = json.loads(r.get('F2B_OPTIONS'))
     except ValueError:
       print('Error loading F2B options: F2B_OPTIONS is not json')
       quit_now = True
+      exit_code = 2
+
+  verifyF2boptions(f2boptions)
+  r.set('F2B_OPTIONS', json.dumps(f2boptions, ensure_ascii=False))
+
+def verifyF2boptions(f2boptions):
+  verifyF2boption(f2boptions,'ban_time', 1800)
+  verifyF2boption(f2boptions,'max_ban_time', 10000)
+  verifyF2boption(f2boptions,'ban_time_increment', True)
+  verifyF2boption(f2boptions,'max_attempts', 10)
+  verifyF2boption(f2boptions,'retry_window', 600)
+  verifyF2boption(f2boptions,'netban_ipv4', 32)
+  verifyF2boption(f2boptions,'netban_ipv6', 128)
+
+def verifyF2boption(f2boptions, f2boption, f2bdefault):
+  f2boptions[f2boption] = f2boptions[f2boption] if f2boption in f2boptions and f2boptions[f2boption] is not None else f2bdefault
 
 def refreshF2bregex():
   global f2bregex
   global quit_now
+  global exit_code
   if not r.get('F2B_REGEX'):
     f2bregex = {}
-    f2bregex[1] = 'warning: .*\[([0-9a-f\.:]+)\]: SASL .+ authentication failed'
-    f2bregex[2] = '-login: Disconnected \(auth failed, .+\): user=.*, method=.+, rip=([0-9a-f\.:]+),'
-    f2bregex[3] = '-login: Aborted login \(tried to use disallowed .+\): user=.+, rip=([0-9a-f\.:]+), lip.+'
-    f2bregex[4] = 'SOGo.+ Login from \'([0-9a-f\.:]+)\' for user .+ might not have worked'
-    f2bregex[5] = 'mailcow UI: Invalid password for .+ by ([0-9a-f\.:]+)'
-    f2bregex[6] = '([0-9a-f\.:]+) \"GET \/SOGo\/.* HTTP.+\" 403 .+'
-    f2bregex[7] = 'Rspamd UI: Invalid password by ([0-9a-f\.:]+)'
-    f2bregex[8] = '-login: Aborted login \(auth failed .+\): user=.+, rip=([0-9a-f\.:]+), lip.+'
+    f2bregex[1] = 'mailcow UI: Invalid password for .+ by ([0-9a-f\.:]+)'
+    f2bregex[2] = 'Rspamd UI: Invalid password by ([0-9a-f\.:]+)'
+    f2bregex[3] = 'warning: .*\[([0-9a-f\.:]+)\]: SASL .+ authentication failed: (?!.*Connection lost to authentication server).+'
+    f2bregex[4] = 'warning: non-SMTP command from .*\[([0-9a-f\.:]+)]:.+'
+    f2bregex[5] = 'NOQUEUE: reject: RCPT from \[([0-9a-f\.:]+)].+Protocol error.+'
+    f2bregex[6] = '-login: Disconnected.+ \(auth failed, .+\): user=.*, method=.+, rip=([0-9a-f\.:]+),'
+    f2bregex[7] = '-login: Aborted login.+ \(auth failed .+\): user=.+, rip=([0-9a-f\.:]+), lip.+'
+    f2bregex[8] = '-login: Aborted login.+ \(tried to use disallowed .+\): user=.+, rip=([0-9a-f\.:]+), lip.+'
+    f2bregex[9] = 'SOGo.+ Login from \'([0-9a-f\.:]+)\' for user .+ might not have worked'
+    f2bregex[10] = '([0-9a-f\.:]+) \"GET \/SOGo\/.* HTTP.+\" 403 .+'
     r.set('F2B_REGEX', json.dumps(f2bregex, ensure_ascii=False))
   else:
     try:
@@ -103,6 +122,7 @@ def refreshF2bregex():
     except ValueError:
       print('Error loading F2B options: F2B_REGEX is not json')
       quit_now = True
+      exit_code = 2
 
 if r.exists('F2B_LOG'):
   r.rename('F2B_LOG', 'NETFILTER_LOG')
@@ -110,6 +130,7 @@ if r.exists('F2B_LOG'):
 def mailcowChainOrder():
   global lock
   global quit_now
+  global exit_code
   while not quit_now:
     time.sleep(10)
     with lock:
@@ -128,14 +149,17 @@ def mailcowChainOrder():
               if position > 2:
                 logCrit('Error in %s chain order: MAILCOW on position %d, restarting container' % (chain.name, position))
                 quit_now = True
+                exit_code = 2
           if not target_found:
             logCrit('Error in %s chain: MAILCOW target not found, restarting container' % (chain.name))
             quit_now = True
+            exit_code = 2
 
 def ban(address):
   global lock
   refreshF2boptions()
   BAN_TIME = int(f2boptions['ban_time'])
+  BAN_TIME_INCREMENT = bool(f2boptions['ban_time_increment'])
   MAX_ATTEMPTS = int(f2boptions['max_attempts'])
   RETRY_WINDOW = int(f2boptions['retry_window'])
   NETBAN_IPV4 = '/' + str(f2boptions['netban_ipv4'])
@@ -163,20 +187,16 @@ def ban(address):
   net = ipaddress.ip_network((address + (NETBAN_IPV4 if type(ip) is ipaddress.IPv4Address else NETBAN_IPV6)), strict=False)
   net = str(net)
 
-  if not net in bans or time.time() - bans[net]['last_attempt'] > RETRY_WINDOW:
-    bans[net] = { 'attempts': 0 }
-    active_window = RETRY_WINDOW
-  else:
-    active_window = time.time() - bans[net]['last_attempt']
+  if not net in bans:
+    bans[net] = {'attempts': 0, 'last_attempt': 0, 'ban_counter': 0}
 
   bans[net]['attempts'] += 1
   bans[net]['last_attempt'] = time.time()
 
-  active_window = time.time() - bans[net]['last_attempt']
-
   if bans[net]['attempts'] >= MAX_ATTEMPTS:
     cur_time = int(round(time.time()))
-    logCrit('Banning %s for %d minutes' % (net, BAN_TIME / 60))
+    NET_BAN_TIME = BAN_TIME if not BAN_TIME_INCREMENT else BAN_TIME * 2 ** bans[net]['ban_counter']
+    logCrit('Banning %s for %d minutes' % (net, NET_BAN_TIME / 60 ))
     if type(ip) is ipaddress.IPv4Address:
       with lock:
         chain = iptc.Chain(iptc.Table(iptc.Table.FILTER), 'MAILCOW')
@@ -195,7 +215,7 @@ def ban(address):
         rule.target = target
         if rule not in chain.rules:
           chain.insert_rule(rule)
-    r.hset('F2B_ACTIVE_BANS', '%s' % net, cur_time + BAN_TIME)
+    r.hset('F2B_ACTIVE_BANS', '%s' % net, cur_time + NET_BAN_TIME)
   else:
     logWarn('%d more attempts in the next %d seconds until %s is banned' % (MAX_ATTEMPTS - bans[net]['attempts'], RETRY_WINDOW, net))
 
@@ -227,7 +247,8 @@ def unban(net):
   r.hdel('F2B_ACTIVE_BANS', '%s' % net)
   r.hdel('F2B_QUEUE_UNBAN', '%s' % net)
   if net in bans:
-    del bans[net]
+    bans[net]['attempts'] = 0
+    bans[net]['ban_counter'] += 1
 
 def permBan(net, unban=False):
   global lock
@@ -241,7 +262,7 @@ def permBan(net, unban=False):
       if rule not in chain.rules and not unban:
         logCrit('Add host/network %s to blacklist' % net)
         chain.insert_rule(rule)
-        r.hset('F2B_PERM_BANS', '%s' % net, int(round(time.time()))) 
+        r.hset('F2B_PERM_BANS', '%s' % net, int(round(time.time())))
       elif rule in chain.rules and unban:
         logCrit('Remove host/network %s from blacklist' % net)
         chain.delete_rule(rule)
@@ -256,7 +277,7 @@ def permBan(net, unban=False):
       if rule not in chain.rules and not unban:
         logCrit('Add host/network %s to blacklist' % net)
         chain.insert_rule(rule)
-        r.hset('F2B_PERM_BANS', '%s' % net, int(round(time.time()))) 
+        r.hset('F2B_PERM_BANS', '%s' % net, int(round(time.time())))
       elif rule in chain.rules and unban:
         logCrit('Remove host/network %s from blacklist' % net)
         chain.delete_rule(rule)
@@ -300,22 +321,30 @@ def watch():
   logInfo('Watching Redis channel F2B_CHANNEL')
   pubsub.subscribe('F2B_CHANNEL')
 
+  global quit_now
+  global exit_code
+
   while not quit_now:
-    for item in pubsub.listen():
-      refreshF2bregex()
-      for rule_id, rule_regex in f2bregex.items():
-        if item['data'] and item['type'] == 'message':
-          try:
-            result = re.search(rule_regex, item['data'])
-          except re.error:
-            result = False
-          if result:
-            addr = result.group(1)
-            ip = ipaddress.ip_address(addr)
-            if ip.is_private or ip.is_loopback:
-              continue
-            logWarn('%s matched rule id %s (%s)' % (addr, rule_id, item['data']))
-            ban(addr)
+    try:
+      for item in pubsub.listen():
+        refreshF2bregex()
+        for rule_id, rule_regex in f2bregex.items():
+          if item['data'] and item['type'] == 'message':
+            try:
+              result = re.search(rule_regex, item['data'])
+            except re.error:
+              result = False
+            if result:
+              addr = result.group(1)
+              ip = ipaddress.ip_address(addr)
+              if ip.is_private or ip.is_loopback:
+                continue
+              logWarn('%s matched rule id %s (%s)' % (addr, rule_id, item['data']))
+              ban(addr)
+    except Exception as ex:
+      logWarn('Error reading log line from pubsub: %s' % ex)
+      quit_now = True
+      exit_code = 2
 
 def snat4(snat_target):
   global lock
@@ -327,6 +356,8 @@ def snat4(snat_target):
     rule.dst = '!' + rule.src
     target = rule.create_target("SNAT")
     target.to_source = snat_target
+    match = rule.create_match("comment")
+    match.comment = f'{int(round(time.time()))}'
     return rule
 
   while not quit_now:
@@ -337,19 +368,35 @@ def snat4(snat_target):
         table.refresh()
         chain = iptc.Chain(table, 'POSTROUTING')
         table.autocommit = False
-        if get_snat4_rule() not in chain.rules:
-          logCrit('Added POSTROUTING rule for source network %s to SNAT target %s' % (get_snat4_rule().src, snat_target))
-          chain.insert_rule(get_snat4_rule())
-          table.commit()
+        new_rule = get_snat4_rule()
+
+        if not chain.rules:
+          # if there are no rules in the chain, insert the new rule directly
+          logInfo(f'Added POSTROUTING rule for source network {new_rule.src} to SNAT target {snat_target}')
+          chain.insert_rule(new_rule)
         else:
-          for position, item in enumerate(chain.rules):
-            if item == get_snat4_rule():
-              if position != 0:
-                chain.delete_rule(get_snat4_rule())
-          table.commit()
+          for position, rule in enumerate(chain.rules):
+            if not hasattr(rule.target, 'parameter'):
+                continue
+            match = all((
+              new_rule.get_src() == rule.get_src(),
+              new_rule.get_dst() == rule.get_dst(),
+              new_rule.target.parameters == rule.target.parameters,
+              new_rule.target.name == rule.target.name
+            ))
+            if position == 0:
+              if not match:
+                logInfo(f'Added POSTROUTING rule for source network {new_rule.src} to SNAT target {snat_target}')
+                chain.insert_rule(new_rule)
+            else:
+              if match:
+                logInfo(f'Remove rule for source network {new_rule.src} to SNAT target {snat_target} from POSTROUTING chain at position {position}')
+                chain.delete_rule(rule)
+
+        table.commit()
         table.autocommit = True
       except:
-        print('Error running SNAT4, retrying...') 
+        print('Error running SNAT4, retrying...')
 
 def snat6(snat_target):
   global lock
@@ -383,13 +430,15 @@ def snat6(snat_target):
           table.commit()
         table.autocommit = True
       except:
-        print('Error running SNAT6, retrying...') 
+        print('Error running SNAT6, retrying...')
 
 def autopurge():
   while not quit_now:
     time.sleep(10)
     refreshF2boptions()
     BAN_TIME = int(f2boptions['ban_time'])
+    MAX_BAN_TIME = int(f2boptions['max_ban_time'])
+    BAN_TIME_INCREMENT = bool(f2boptions['ban_time_increment'])
     MAX_ATTEMPTS = int(f2boptions['max_attempts'])
     QUEUE_UNBAN = r.hgetall('F2B_QUEUE_UNBAN')
     if QUEUE_UNBAN:
@@ -397,7 +446,9 @@ def autopurge():
         unban(str(net))
     for net in bans.copy():
       if bans[net]['attempts'] >= MAX_ATTEMPTS:
-        if time.time() - bans[net]['last_attempt'] > BAN_TIME:
+        NET_BAN_TIME = BAN_TIME if not BAN_TIME_INCREMENT else BAN_TIME * 2 ** bans[net]['ban_counter']
+        TIME_SINCE_LAST_ATTEMPT = time.time() - bans[net]['last_attempt']
+        if TIME_SINCE_LAST_ATTEMPT > NET_BAN_TIME or TIME_SINCE_LAST_ATTEMPT > MAX_BAN_TIME:
           unban(net)
 
 def isIpNetwork(address):
@@ -449,7 +500,7 @@ def whitelistUpdate():
       if Counter(new_whitelist) != Counter(WHITELIST):
         WHITELIST = new_whitelist
         logInfo('Whitelist was changed, it has %s entries' % len(WHITELIST))
-    time.sleep(60.0 - ((time.time() - start_time) % 60.0)) 
+    time.sleep(60.0 - ((time.time() - start_time) % 60.0))
 
 def blacklistUpdate():
   global quit_now
@@ -460,7 +511,7 @@ def blacklistUpdate():
     new_blacklist = []
     if list:
       new_blacklist = genNetworkList(list)
-    if Counter(new_blacklist) != Counter(BLACKLIST): 
+    if Counter(new_blacklist) != Counter(BLACKLIST):
       addban = set(new_blacklist).difference(BLACKLIST)
       delban = set(BLACKLIST).difference(new_blacklist)
       BLACKLIST = new_blacklist
@@ -471,7 +522,7 @@ def blacklistUpdate():
       if delban:
         for net in delban:
           permBan(net=net, unban=True)
-    time.sleep(60.0 - ((time.time() - start_time) % 60.0)) 
+    time.sleep(60.0 - ((time.time() - start_time) % 60.0))
 
 def initChain():
   # Is called before threads start, no locking
@@ -555,3 +606,5 @@ if __name__ == '__main__':
 
   while not quit_now:
     time.sleep(0.5)
+
+  sys.exit(exit_code)

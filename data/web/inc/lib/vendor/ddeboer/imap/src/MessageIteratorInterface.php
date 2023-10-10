@@ -4,10 +4,17 @@ declare(strict_types=1);
 
 namespace Ddeboer\Imap;
 
-interface MessageIteratorInterface extends \Iterator
+use Ddeboer\Imap\Message\PartInterface;
+
+/**
+ * @extends \Iterator<MessageInterface>
+ */
+interface MessageIteratorInterface extends \Iterator, \Countable
 {
     /**
      * Get current message.
+     *
+     * @return MessageInterface<PartInterface>
      */
     public function current(): MessageInterface;
 }

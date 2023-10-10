@@ -2,8 +2,18 @@
 function customize($_action, $_item, $_data = null) {
 	global $redis;
 	global $lang;
+  
   switch ($_action) {
     case 'add':
+      // disable functionality when demo mode is enabled
+      if ($GLOBALS["DEMO_MODE"]) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_item, $_data),
+          'msg' => 'demo_mode_enabled'
+        );
+        return false;
+      }
       if ($_SESSION['mailcow_cc_role'] != "admin") {
         $_SESSION['return'][] = array(
           'type' => 'danger',
@@ -72,6 +82,15 @@ function customize($_action, $_item, $_data = null) {
       }
     break;
     case 'edit':
+      // disable functionality when demo mode is enabled
+      if ($GLOBALS["DEMO_MODE"]) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_item, $_data),
+          'msg' => 'demo_mode_enabled'
+        );
+        return false;
+      }
       if ($_SESSION['mailcow_cc_role'] != "admin") {
         $_SESSION['return'][] = array(
           'type' => 'danger',
@@ -116,6 +135,7 @@ function customize($_action, $_item, $_data = null) {
           $ui_announcement_text = $_data['ui_announcement_text'];
           $ui_announcement_type = (in_array($_data['ui_announcement_type'], array('info', 'warning', 'danger'))) ? $_data['ui_announcement_type'] : false;
           $ui_announcement_active = (!empty($_data['ui_announcement_active']) ? 1 : 0);
+
           try {
             $redis->set('TITLE_NAME', htmlspecialchars($title_name));
             $redis->set('MAIN_NAME', htmlspecialchars($main_name));
@@ -140,9 +160,37 @@ function customize($_action, $_item, $_data = null) {
             'msg' => 'ui_texts'
           );
         break;
+        case 'ip_check':
+          $ip_check = ($_data['ip_check_opt_in'] == "1") ? 1 : 0;
+          try {
+            $redis->set('IP_CHECK', $ip_check);
+          }
+          catch (RedisException $e) {
+            $_SESSION['return'][] = array(
+              'type' => 'danger',
+              'log' => array(__FUNCTION__, $_action, $_item, $_data),
+              'msg' => array('redis_error', $e)
+            );
+            return false;
+          }
+          $_SESSION['return'][] = array(
+            'type' => 'success',
+            'log' => array(__FUNCTION__, $_action, $_item, $_data),
+            'msg' => 'ip_check_opt_in_modified'
+          );
+        break;
       }
     break;
     case 'delete':
+      // disable functionality when demo mode is enabled
+      if ($GLOBALS["DEMO_MODE"]) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_item, $_data),
+          'msg' => 'demo_mode_enabled'
+        );
+        return false;
+      }
       if ($_SESSION['mailcow_cc_role'] != "admin") {
         $_SESSION['return'][] = array(
           'type' => 'danger',
@@ -207,7 +255,7 @@ function customize($_action, $_item, $_data = null) {
           try {
             $data['title_name'] = ($title_name = $redis->get('TITLE_NAME')) ? $title_name : 'mailcow UI';
             $data['main_name'] = ($main_name = $redis->get('MAIN_NAME')) ? $main_name : 'mailcow UI';
-            $data['apps_name'] = ($apps_name = $redis->get('APPS_NAME')) ? $apps_name : 'mailcow Apps';
+            $data['apps_name'] = ($apps_name = $redis->get('APPS_NAME')) ? $apps_name : $lang['header']['apps'];
             $data['help_text'] = ($help_text = $redis->get('HELP_TEXT')) ? $help_text : false;
             if (!empty($redis->get('UI_IMPRESS'))) {
               $redis->set('UI_FOOTER', $redis->get('UI_IMPRESS'));
@@ -234,14 +282,29 @@ function customize($_action, $_item, $_data = null) {
             $img_data = explode('base64,', customize('get', 'main_logo'));
             if ($img_data[1]) {
               $image->readImageBlob(base64_decode($img_data[1]));
+              return $image->identifyImage();
             }
-            return $image->identifyImage();
+            return false;
           }
           catch (ImagickException $e) {
             $_SESSION['return'][] = array(
               'type' => 'danger',
               'log' => array(__FUNCTION__, $_action, $_item, $_data),
               'msg' => 'imagick_exception'
+            );
+            return false;
+          }
+        break;
+        case 'ip_check':
+          try {
+            $ip_check = ($ip_check = $redis->get('IP_CHECK')) ? $ip_check : 0;
+            return $ip_check;
+          }
+          catch (RedisException $e) {
+            $_SESSION['return'][] = array(
+              'type' => 'danger',
+              'log' => array(__FUNCTION__, $_action, $_item, $_data),
+              'msg' => array('redis_error', $e)
             );
             return false;
           }

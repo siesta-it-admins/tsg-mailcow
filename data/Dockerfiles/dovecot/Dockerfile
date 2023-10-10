@@ -1,24 +1,30 @@
-FROM debian:buster-slim
-LABEL maintainer "Andre Peters <andre.peters@servercow.de>"
+FROM debian:bullseye-slim
+LABEL maintainer "The Infrastructure Company GmbH <info@servercow.de>"
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG DOVECOT=2.3.11.3
+# renovate: datasource=github-tags depName=dovecot/core versioning=semver-coerced
+ARG DOVECOT=2.3.20
+# renovate: datasource=github-releases depName=tianon/gosu versioning=semver-coerced
+ARG GOSU_VERSION=1.16
 ENV LC_ALL C
+
 
 # Add groups and users before installing Dovecot to not break compatibility
 RUN groupadd -g 5000 vmail \
   && groupadd -g 401 dovecot \
   && groupadd -g 402 dovenull \
+  && groupadd -g 999 sogo \
+  && usermod -a -G sogo nobody \
   && useradd -g vmail -u 5000 vmail -d /var/vmail \
   && useradd -c "Dovecot unprivileged user" -d /dev/null -u 401 -g dovecot -s /bin/false dovecot \
   && useradd -c "Dovecot login user" -d /dev/null -u 402 -g dovenull -s /bin/false dovenull \
   && touch /etc/default/locale \
   && apt-get update \
   && apt-get -y --no-install-recommends install \
+  build-essential \
   apt-transport-https \
   ca-certificates \
   cpanminus \
-  cron \
   curl \
   dnsutils \
   dirmngr \
@@ -56,6 +62,7 @@ RUN groupadd -g 5000 vmail \
   libproc-processtable-perl \
   libreadonly-perl \
   libregexp-common-perl \
+  libssl-dev \
   libsys-meminfo-perl \
   libterm-readkey-perl \
   libtest-deep-perl \
@@ -72,6 +79,7 @@ RUN groupadd -g 5000 vmail \
   liburi-perl \
   libwww-perl \
   lua-sql-mysql \
+  lua-socket \
   mariadb-client \
   procps \
   python3-pip \
@@ -80,8 +88,13 @@ RUN groupadd -g 5000 vmail \
   syslog-ng \
   syslog-ng-core \
   syslog-ng-mod-redis \
+  wget \
+  && dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
+  && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch" \
+  && chmod +x /usr/local/bin/gosu \
+  && gosu nobody true \
   && apt-key adv --fetch-keys https://repo.dovecot.org/DOVECOT-REPO-GPG \
-  && echo "deb https://repo.dovecot.org/ce-${DOVECOT}/debian/buster buster main" > /etc/apt/sources.list.d/dovecot.list \
+  && echo "deb https://repo.dovecot.org/ce-${DOVECOT}/debian/bullseye bullseye main" > /etc/apt/sources.list.d/dovecot.list \
   && apt-get update \
   && apt-get -y --no-install-recommends install \
   dovecot-lua \
@@ -98,15 +111,16 @@ RUN groupadd -g 5000 vmail \
   && apt-get autoremove --purge -y \
   && apt-get autoclean \
   && rm -rf /var/lib/apt/lists/* \
-  && rm -rf /tmp/* /var/tmp/* /etc/cron.daily/* /root/.cache/
+  && rm -rf /tmp/* /var/tmp/* /root/.cache/
+# imapsync dependencies
+RUN cpan Crypt::OpenSSL::PKCS12
 
 COPY trim_logs.sh /usr/local/bin/trim_logs.sh
 COPY clean_q_aged.sh /usr/local/bin/clean_q_aged.sh
 COPY syslog-ng.conf /etc/syslog-ng/syslog-ng.conf
 COPY syslog-ng-redis_slave.conf /etc/syslog-ng/syslog-ng-redis_slave.conf
 COPY imapsync /usr/local/bin/imapsync
-COPY postlogin.sh /usr/local/bin/postlogin.sh
-COPY imapsync_cron.pl /usr/local/bin/imapsync_cron.pl
+COPY imapsync_runner.pl /usr/local/bin/imapsync_runner.pl
 COPY report-spam.sieve /usr/lib/dovecot/sieve/report-spam.sieve
 COPY report-ham.sieve /usr/lib/dovecot/sieve/report-ham.sieve
 COPY rspamd-pipe-ham /usr/lib/dovecot/sieve/rspamd-pipe-ham

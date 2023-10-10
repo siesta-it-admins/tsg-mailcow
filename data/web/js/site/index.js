@@ -1,4 +1,5 @@
 $(document).ready(function() {
-	$('nav').hide();
+  var theme = localStorage.getItem("theme");
   localStorage.clear();
+  localStorage.setItem("theme", theme);
 });

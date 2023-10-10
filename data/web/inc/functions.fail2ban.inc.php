@@ -18,7 +18,7 @@ function fail2ban($_action, $_data = null) {
           }
           if (isset($tmp_wl_data)) {
             natsort($tmp_wl_data);
-            $f2b_options['whitelist'] = implode(PHP_EOL, $tmp_wl_data);
+            $f2b_options['whitelist'] = implode(PHP_EOL, (array)$tmp_wl_data);
           }
           else {
             $f2b_options['whitelist'] = "";
@@ -34,7 +34,7 @@ function fail2ban($_action, $_data = null) {
           }
           if (isset($tmp_bl_data)) {
             natsort($tmp_bl_data);
-            $f2b_options['blacklist'] = implode(PHP_EOL, $tmp_bl_data);
+            $f2b_options['blacklist'] = implode(PHP_EOL, (array)$tmp_bl_data);
           }
           else {
             $f2b_options['blacklist'] = "";
@@ -46,7 +46,11 @@ function fail2ban($_action, $_data = null) {
         $pb = $redis->hGetAll('F2B_PERM_BANS');
         if (is_array($pb)) {
           foreach ($pb as $key => $value) {
-            $f2b_options['perm_bans'][] = $key;
+            $f2b_options['perm_bans'][] = array(
+                'network'=>$key,
+                'ip' => strtok($key,'/')
+            );
+
           }
         }
         else {
@@ -61,6 +65,7 @@ function fail2ban($_action, $_data = null) {
             $f2b_options['active_bans'][] = array(
               'queued_for_unban' => $queued_for_unban,
               'network' => $network,
+              'ip' => strtok($network,'/'),
               'banned_until' => sprintf('%02dh %02dm %02ds', ($difference/3600), ($difference/60%60), $difference%60)
             );
           }
@@ -133,14 +138,6 @@ function fail2ban($_action, $_data = null) {
               $redis->Set('F2B_REGEX', json_encode($regex_array, JSON_UNESCAPED_SLASHES));
             }
           }
-          else {
-            $_SESSION['return'][] = array(
-              'type' => 'success',
-              'log' => array(__FUNCTION__, $_action, $_data_log),
-              'msg' => print_r($_data, true)
-            );
-            return false;
-          }
           $_SESSION['return'][] = array(
             'type' => 'success',
             'log' => array(__FUNCTION__, $_action, $_data_log),
@@ -171,6 +168,7 @@ function fail2ban($_action, $_data = null) {
             }
             // Whitelist network
             elseif ($_data['action'] == "whitelist") {
+              if (empty($network)) { continue; }
               if (valid_network($network)) {
                 try {
                   $redis->hSet('F2B_WHITELIST', $network, 1);
@@ -197,6 +195,7 @@ function fail2ban($_action, $_data = null) {
             }
             // Blacklist network
             elseif ($_data['action'] == "blacklist") {
+              if (empty($network)) { continue; }
               if (valid_network($network) && !in_array($network, array(
                 '0.0.0.0',
                 '0.0.0.0/0',
@@ -240,7 +239,9 @@ function fail2ban($_action, $_data = null) {
       $is_now = fail2ban('get');
       if (!empty($is_now)) {
         $ban_time = intval((isset($_data['ban_time'])) ? $_data['ban_time'] : $is_now['ban_time']);
-        $max_attempts = intval((isset($_data['max_attempts'])) ? $_data['max_attempts'] : $is_now['active_int']);
+        $ban_time_increment = (isset($_data['ban_time_increment']) && $_data['ban_time_increment'] == "1") ? 1 : 0;
+        $max_attempts = intval((isset($_data['max_attempts'])) ? $_data['max_attempts'] : $is_now['max_attempts']);
+        $max_ban_time = intval((isset($_data['max_ban_time'])) ? $_data['max_ban_time'] : $is_now['max_ban_time']);
         $retry_window = intval((isset($_data['retry_window'])) ? $_data['retry_window'] : $is_now['retry_window']);
         $netban_ipv4 = intval((isset($_data['netban_ipv4'])) ? $_data['netban_ipv4'] : $is_now['netban_ipv4']);
         $netban_ipv6 = intval((isset($_data['netban_ipv6'])) ? $_data['netban_ipv6'] : $is_now['netban_ipv6']);
@@ -257,6 +258,8 @@ function fail2ban($_action, $_data = null) {
       }
       $f2b_options = array();
       $f2b_options['ban_time'] = ($ban_time < 60) ? 60 : $ban_time;
+      $f2b_options['ban_time_increment'] = ($ban_time_increment == 1) ? true : false;
+      $f2b_options['max_ban_time'] = ($max_ban_time < 60) ? 60 : $max_ban_time;
       $f2b_options['netban_ipv4'] = ($netban_ipv4 < 8) ? 8 : $netban_ipv4;
       $f2b_options['netban_ipv6'] = ($netban_ipv6 < 8) ? 8 : $netban_ipv6;
       $f2b_options['netban_ipv4'] = ($netban_ipv4 > 32) ? 32 : $netban_ipv4;

@@ -1,50 +1,11 @@
 #!/usr/bin/env bash
 
-# Check permissions
-if [ "$(id -u)" -ne "0" ]; then
-  echo "You need to be root"
-  exit 1
-fi
-
-if [[ "$(uname -r)" =~ ^4\.15\.0-60 ]]; then
-  echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!";
-  echo "Please update to 5.x or use another distribution."
-  exit 1
-fi
-
-if [[ "$(uname -r)" =~ ^4\.4\. ]]; then
-  if grep -q Ubuntu <<< $(uname -a); then
-    echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!"
-    echo "Please update to linux-generic-hwe-16.04 by running \"apt-get install --install-recommends linux-generic-hwe-16.04\""
-    exit 1
-  fi
-  echo "mailcow on a 4.4.x kernel is not supported. It may or may not work, please upgrade your kernel or continue at your own risk."
-  read -p "Press any key to continue..." < /dev/tty
-fi
-
-# Exit on error and pipefail
-set -o pipefail
-
-# Setting high dc timeout
-export COMPOSE_HTTP_TIMEOUT=600
-
-# Add /opt/bin to PATH
-PATH=$PATH:/opt/bin
-
-umask 0022
-
-for bin in curl docker-compose docker git awk sha1sum; do
-  if [[ -z $(which ${bin}) ]]; then echo "Cannot find ${bin}, exiting..."; exit 1; fi
-done
-
-export LC_ALL=C
-DATE=$(date +%Y-%m-%d_%H_%M_%S)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
+############## Begin Function Section ##############
 
 check_online_status() {
-  CHECK_ONLINE_IPS=(1.1.1.1 9.9.9.9 8.8.8.8)
-  for ip in "${CHECK_ONLINE_IPS[@]}"; do
-    if timeout 3 ping -c 1 ${ip} > /dev/null; then
+  CHECK_ONLINE_DOMAINS=('https://github.com' 'https://hub.docker.com')
+  for domain in "${CHECK_ONLINE_DOMAINS[@]}"; do
+    if timeout 6 curl --head --silent --output /dev/null ${domain}; then
       return 0
     fi
   done
@@ -55,6 +16,11 @@ prefetch_images() {
   [[ -z ${BRANCH} ]] && { echo -e "\e[33m\nUnknown branch...\e[0m"; exit 1; }
   git fetch origin #${BRANCH}
   while read image; do
+    if [[ "${image}" == "robbertkl/ipv6nat" ]]; then
+      if ! grep -qi "ipv6nat-mailcow" docker-compose.yml || grep -qi "enable_ipv6: false" docker-compose.yml; then
+        continue
+      fi
+    fi
     RET_C=0
     until docker pull ${image}; do
       RET_C=$((RET_C + 1))
@@ -67,7 +33,7 @@ prefetch_images() {
 
 docker_garbage() {
   IMGS_TO_DELETE=()
-  for container in $(grep -oP "image: \Kmailcow.+" docker-compose.yml); do
+  for container in $(grep -oP "image: \Kmailcow.+" "${SCRIPT_DIR}/docker-compose.yml"); do
     REPOSITORY=${container/:*}
     TAG=${container/*:}
     V_MAIN=${container/*.}
@@ -106,24 +72,285 @@ docker_garbage() {
         echo "OK, skipped."
       fi
     else
-      echo "Skipped image removal because of force mode."
+      echo "Running image removal without extra confirmation due to force mode."
+      docker rmi ${IMGS_TO_DELETE[*]}
+    fi
+    echo -e "\e[32mFurther cleanup...\e[0m"
+    echo "If you want to cleanup further garbage collected by Docker, please make sure all containers are up and running before cleaning your system by executing \"docker system prune\""
+  fi
+}
+
+in_array() {
+  local e match="$1"
+  shift
+  for e; do [[ "$e" == "$match" ]] && return 0; done
+  return 1
+}
+
+migrate_docker_nat() {
+  NAT_CONFIG='{"ipv6":true,"fixed-cidr-v6":"fd00:dead:beef:c0::/80","experimental":true,"ip6tables":true}'
+  # Min Docker version
+  DOCKERV_REQ=20.10.2
+  # Current Docker version
+  DOCKERV_CUR=$(docker version -f '{{.Server.Version}}')
+  if grep -qi "ipv6nat-mailcow" docker-compose.yml && grep -qi "enable_ipv6: true" docker-compose.yml; then
+    echo -e "\e[32mNative IPv6 implementation available.\e[0m"
+    echo "This will enable experimental features in the Docker daemon and configure Docker to do the IPv6 NATing instead of ipv6nat-mailcow."
+    echo '!!! This step is recommended !!!'
+    echo "mailcow will try to roll back the changes if starting Docker fails after modifying the daemon.json configuration file."
+    read -r -p "Should we try to enable the native IPv6 implementation in Docker now (recommended)? [y/N] " dockernatresponse
+    if [[ ! "${dockernatresponse}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
+      echo "OK, skipping this step."
+      return 0
     fi
   fi
-  echo -e "\e[32mFurther cleanup...\e[0m"
-  echo "If you want to cleanup further garbage collected by Docker, please make sure all containers are up and running before cleaning your system by executing \"docker system prune\""
+  # Sort versions and check if we are running a newer or equal version to req
+  if [ $(printf "${DOCKERV_REQ}\n${DOCKERV_CUR}" | sort -V | tail -n1) == "${DOCKERV_CUR}" ]; then
+    # If Dockerd daemon json exists
+    if [ -s /etc/docker/daemon.json ]; then
+      IFS=',' read -r -a dockerconfig <<< $(cat /etc/docker/daemon.json | tr -cd '[:alnum:],')
+      if ! in_array ipv6true "${dockerconfig[@]}" || \
+        ! in_array experimentaltrue "${dockerconfig[@]}" || \
+        ! in_array ip6tablestrue "${dockerconfig[@]}" || \
+        ! grep -qi "fixed-cidr-v6" /etc/docker/daemon.json; then
+          echo -e "\e[33mWarning:\e[0m You seem to have modified the /etc/docker/daemon.json configuration by yourself and not fully/correctly activated the native IPv6 NAT implementation."
+          echo "You will need to merge your existing configuration manually or fix/delete the existing daemon.json configuration before trying the update process again."
+          echo -e "Please merge the following content and restart the Docker daemon:\n"
+          echo ${NAT_CONFIG}
+          return 1
+      fi
+    else
+      echo "Working on IPv6 NAT, please wait..."
+      echo ${NAT_CONFIG} > /etc/docker/daemon.json
+      ip6tables -F -t nat
+      [[ -e /etc/alpine-release ]] && rc-service docker restart || systemctl restart docker.service
+      if [[ $? -ne 0 ]]; then
+        echo -e "\e[31mError:\e[0m Failed to activate IPv6 NAT! Reverting and exiting."
+        rm /etc/docker/daemon.json
+        if [[ -e /etc/alpine-release ]]; then
+          rc-service docker restart
+        else
+          systemctl reset-failed docker.service
+          systemctl restart docker.service
+        fi
+        return 1
+      fi
+    fi
+    # Removing legacy container
+    sed -i '/ipv6nat-mailcow:$/,/^$/d' docker-compose.yml
+    if [ -s docker-compose.override.yml ]; then
+        sed -i '/ipv6nat-mailcow:$/,/^$/d' docker-compose.override.yml
+        if [[ "$(cat docker-compose.override.yml | sed '/^\s*$/d' | wc -l)" == "2" ]]; then
+            mv docker-compose.override.yml docker-compose.override.yml_backup
+        fi
+    fi
+    echo -e "\e[32mGreat! \e[0mNative IPv6 NAT is active.\e[0m"
+  else
+    echo -e "\e[31mPlease upgrade Docker to version ${DOCKERV_REQ} or above.\e[0m"
+    return 0
+  fi
 }
+
+remove_obsolete_nginx_ports() {
+    # Removing obsolete docker-compose.override.yml
+    for override in docker-compose.override.yml docker-compose.override.yaml; do
+    if [ -s $override ] ; then
+        if cat $override | grep nginx-mailcow > /dev/null 2>&1; then
+          if cat $override | grep -E '(\[::])' > /dev/null 2>&1; then
+            if cat $override | grep -w 80:80 > /dev/null 2>&1 && cat $override | grep -w 443:443 > /dev/null 2>&1 ; then
+              echo -e "\e[33mBacking up ${override} to preserve custom changes...\e[0m"
+              echo -e "\e[33m!!! Manual Merge needed (if other overrides are set) !!!\e[0m"
+              sleep 3
+              cp $override ${override}_backup
+              sed -i '/nginx-mailcow:$/,/^$/d' $override
+              echo -e "\e[33mRemoved obsolete NGINX IPv6 Bind from original override File.\e[0m"
+                if [[ "$(cat $override | sed '/^\s*$/d' | wc -l)" == "2" ]]; then
+                  mv $override ${override}_empty
+                  echo -e "\e[31m${override} is empty. Renamed it to ensure mailcow is startable.\e[0m"
+                fi
+            fi
+          fi
+        fi
+    fi
+    done        
+}
+
+detect_docker_compose_command(){
+if ! [[ "${DOCKER_COMPOSE_VERSION}" =~ ^(native|standalone)$ ]]; then
+  if docker compose > /dev/null 2>&1; then
+      if docker compose version --short | grep "2." > /dev/null 2>&1; then
+        DOCKER_COMPOSE_VERSION=native
+        COMPOSE_COMMAND="docker compose"
+        echo -e "\e[31mFound Docker Compose Plugin (native).\e[0m"
+        echo -e "\e[31mSetting the DOCKER_COMPOSE_VERSION Variable to native\e[0m"
+        sed -i 's/^DOCKER_COMPOSE_VERSION=.*/DOCKER_COMPOSE_VERSION=native/' $SCRIPT_DIR/mailcow.conf 
+        sleep 2
+        echo -e "\e[33mNotice: You'll have to update this Compose Version via your Package Manager manually!\e[0m"
+      else
+        echo -e "\e[31mCannot find Docker Compose with a Version Higher than 2.X.X.\e[0m" 
+        echo -e "\e[31mPlease update/install it manually regarding to this doc site: https://docs.mailcow.email/i_u_m/i_u_m_install/\e[0m"
+        exit 1
+      fi
+  elif docker-compose > /dev/null 2>&1; then
+    if ! [[ $(alias docker-compose 2> /dev/null) ]] ; then
+      if docker-compose version --short | grep "^2." > /dev/null 2>&1; then
+        DOCKER_COMPOSE_VERSION=standalone
+        COMPOSE_COMMAND="docker-compose"
+        echo -e "\e[31mFound Docker Compose Standalone.\e[0m"
+        echo -e "\e[31mSetting the DOCKER_COMPOSE_VERSION Variable to standalone\e[0m"
+        sed -i 's/^DOCKER_COMPOSE_VERSION=.*/DOCKER_COMPOSE_VERSION=standalone/' $SCRIPT_DIR/mailcow.conf
+        sleep 2
+        echo -e "\e[33mNotice: For an automatic update of docker-compose please use the update_compose.sh scripts located at the helper-scripts folder.\e[0m"
+      else
+        echo -e "\e[31mCannot find Docker Compose with a Version Higher than 2.X.X.\e[0m" 
+        echo -e "\e[31mPlease update/install regarding to this doc site: https://docs.mailcow.email/i_u_m/i_u_m_install/\e[0m"
+        exit 1
+      fi
+    fi
+
+  else
+    echo -e "\e[31mCannot find Docker Compose.\e[0m" 
+    echo -e "\e[31mPlease install it regarding to this doc site: https://docs.mailcow.email/i_u_m/i_u_m_install/\e[0m"
+    exit 1
+  fi
+
+elif [ "${DOCKER_COMPOSE_VERSION}" == "native" ]; then
+  COMPOSE_COMMAND="docker compose"
+  # Check if Native Compose works and has not been deleted  
+  if ! $COMPOSE_COMMAND > /dev/null 2>&1; then
+    # IF it not exists/work anymore try the other command
+    COMPOSE_COMMAND="docker-compose"
+    if ! $COMPOSE_COMMAND > /dev/null 2>&1 || ! $COMPOSE_COMMAND --version | grep "^2." > /dev/null 2>&1; then
+      # IF it cannot find Standalone in > 2.X, then script stops
+      echo -e "\e[31mCannot find Docker Compose or the Version is lower then 2.X.X.\e[0m" 
+      echo -e "\e[31mPlease install it regarding to this doc site: https://docs.mailcow.email/i_u_m/i_u_m_install/\e[0m"
+      exit 1
+    fi
+      # If it finds the standalone Plugin it will use this instead and change the mailcow.conf Variable accordingly
+      echo -e "\e[31mFound different Docker Compose Version then declared in mailcow.conf!\e[0m"
+      echo -e "\e[31mSetting the DOCKER_COMPOSE_VERSION Variable from native to standalone\e[0m"
+      sed -i 's/^DOCKER_COMPOSE_VERSION=.*/DOCKER_COMPOSE_VERSION=standalone/' $SCRIPT_DIR/mailcow.conf 
+      sleep 2
+  fi
+
+
+elif [ "${DOCKER_COMPOSE_VERSION}" == "standalone" ]; then
+  COMPOSE_COMMAND="docker-compose"
+  # Check if Standalone Compose works and has not been deleted  
+  if ! $COMPOSE_COMMAND > /dev/null 2>&1 && ! $COMPOSE_COMMAND --version > /dev/null 2>&1 | grep "^2." > /dev/null 2>&1; then
+    # IF it not exists/work anymore try the other command
+    COMPOSE_COMMAND="docker compose"
+    if ! $COMPOSE_COMMAND > /dev/null 2>&1; then
+      # IF it cannot find Native in > 2.X, then script stops
+      echo -e "\e[31mCannot find Docker Compose.\e[0m" 
+      echo -e "\e[31mPlease install it regarding to this doc site: https://docs.mailcow.email/i_u_m/i_u_m_install/\e[0m"
+      exit 1
+    fi
+      # If it finds the native Plugin it will use this instead and change the mailcow.conf Variable accordingly
+      echo -e "\e[31mFound different Docker Compose Version then declared in mailcow.conf!\e[0m"
+      echo -e "\e[31mSetting the DOCKER_COMPOSE_VERSION Variable from standalone to native\e[0m"
+      sed -i 's/^DOCKER_COMPOSE_VERSION=.*/DOCKER_COMPOSE_VERSION=native/' $SCRIPT_DIR/mailcow.conf 
+      sleep 2
+  fi
+fi
+}
+
+detect_bad_asn() {
+  echo -e "\e[33mDetecting if your IP is listed on Spamhaus Bad ASN List...\e[0m"
+  response=$(curl --connect-timeout 15 --max-time 30 -s -o /dev/null -w "%{http_code}" "https://asn-check.mailcow.email")
+  if [ "$response" -eq 503 ]; then
+    if [ -z "$SPAMHAUS_DQS_KEY" ]; then
+      echo -e "\e[33mYour server's public IP uses an AS that is blocked by Spamhaus to use their DNS public blocklists for Postfix.\e[0m"
+      echo -e "\e[33mmailcow did not detected a value for the variable SPAMHAUS_DQS_KEY inside mailcow.conf!\e[0m"
+      sleep 2
+      echo ""
+      echo -e "\e[33mTo use the Spamhaus DNS Blocklists again, you will need to create a FREE account for their Data Query Service (DQS) at: https://www.spamhaus.com/free-trial/sign-up-for-a-free-data-query-service-account\e[0m"
+      echo -e "\e[33mOnce done, enter your DQS API key in mailcow.conf and mailcow will do the rest for you!\e[0m"
+      echo ""
+      sleep 2
+
+    else
+      echo -e "\e[33mYour server's public IP uses an AS that is blocked by Spamhaus to use their DNS public blocklists for Postfix.\e[0m"
+      echo -e "\e[32mmailcow detected a Value for the variable SPAMHAUS_DQS_KEY inside mailcow.conf. Postfix will use DQS with the given API key...\e[0m"
+    fi
+  elif [ "$response" -eq 200 ]; then
+    echo -e "\e[33mCheck completed! Your IP is \e[32mclean\e[0m"
+  elif [ "$response" -eq 429 ]; then
+    echo -e "\e[33mCheck completed! \e[31mYour IP seems to be rate limited on the ASN Check service... please try again later!\e[0m"
+  else
+    echo -e "\e[31mCheck failed! \e[0mMaybe a DNS or Network problem?\e[0m"
+  fi
+}
+
+############## End Function Section ##############
+
+# Check permissions
+if [ "$(id -u)" -ne "0" ]; then
+  echo "You need to be root"
+  exit 1
+fi
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Run pre-update-hook
+if [ -f "${SCRIPT_DIR}/pre_update_hook.sh" ]; then
+  bash "${SCRIPT_DIR}/pre_update_hook.sh"
+fi
+
+if [[ "$(uname -r)" =~ ^4\.15\.0-60 ]]; then
+  echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!";
+  echo "Please update to 5.x or use another distribution."
+  exit 1
+fi
+
+if [[ "$(uname -r)" =~ ^4\.4\. ]]; then
+  if grep -q Ubuntu <<< $(uname -a); then
+    echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!"
+    echo "Please update to linux-generic-hwe-16.04 by running \"apt-get install --install-recommends linux-generic-hwe-16.04\""
+    exit 1
+  fi
+  echo "mailcow on a 4.4.x kernel is not supported. It may or may not work, please upgrade your kernel or continue at your own risk."
+  read -p "Press any key to continue..." < /dev/tty
+fi
+
+# Exit on error and pipefail
+set -o pipefail
+
+# Setting high dc timeout
+export COMPOSE_HTTP_TIMEOUT=600
+
+# Add /opt/bin to PATH
+PATH=$PATH:/opt/bin
+
+umask 0022
+
+# Unset COMPOSE_COMMAND and DOCKER_COMPOSE_VERSION Variable to be on the newest state.
+unset COMPOSE_COMMAND
+unset DOCKER_COMPOSE_VERSION
+
+for bin in curl docker git awk sha1sum grep cut; do
+  if [[ -z $(command -v ${bin}) ]]; then 
+  echo "Cannot find ${bin}, exiting..." 
+  exit 1;
+  fi  
+done
+
+export LC_ALL=C
+DATE=$(date +%Y-%m-%d_%H_%M_%S)
+BRANCH=$(cd ${SCRIPT_DIR}; git rev-parse --abbrev-ref HEAD)
 
 while (($#)); do
   case "${1}" in
     --check|-c)
       echo "Checking remote code for updates..."
-      LATEST_REV=$(git ls-remote --exit-code --refs --quiet https://github.com/mailcow/mailcow-dockerized ${BRANCH} | cut -f1)
+      LATEST_REV=$(git ls-remote --exit-code --refs --quiet https://github.com/siesta-it-admins/tsg-mailcow ${BRANCH} | cut -f1)
       if [ $? -ne 0 ]; then
         echo "A problem occurred while trying to fetch the latest revision from github."
         exit 99
       fi
       if [[ -z $(git log HEAD --pretty=format:"%H" | grep "${LATEST_REV}") ]]; then
-        echo "Updated code is available."
+        echo -e "Updated code is available.\nThe changes can be found here: https://github.com/siesta-it-admins/tsg-mailcow/commits/master"
+        git log --date=short --pretty=format:"%ad - %s" $(git rev-parse --short HEAD)..origin/master
         exit 0
       else
         echo "No updates available."
@@ -136,10 +363,21 @@ while (($#)); do
     --skip-start)
       SKIP_START=y
     ;;
+    --skip-ping-check)
+      SKIP_PING_CHECK=y
+    ;;
+    --stable)
+      CURRENT_BRANCH="$(cd ${SCRIPT_DIR}; git rev-parse --abbrev-ref HEAD)"
+      NEW_BRANCH="mailman3"
+    ;;
     --gc)
       echo -e "\e[32mCollecting garbage...\e[0m"
       docker_garbage
       exit 0
+    ;;
+    --nightly)
+      CURRENT_BRANCH="$(cd ${SCRIPT_DIR}; git rev-parse --abbrev-ref HEAD)"
+      NEW_BRANCH="nightly"
     ;;
     --prefetch)
       echo -e "\e[32mPrefetching images...\e[0m"
@@ -147,40 +385,49 @@ while (($#)); do
       exit 0
     ;;
     -f|--force)
-      echo -e "\e[32mForcing Update...\e[0m"
+      echo -e "\e[32mRunning in forced mode...\e[0m"
       FORCE=y
     ;;
-    --no-update-compose)
-      NO_UPDATE_COMPOSE=y
+    -d|--dev)
+      echo -e "\e[32mRunning in Developer mode...\e[0m"
+      DEV=y
     ;;
     --help|-h)
-    echo './update.sh [-c|--check, --ours, --gc, --skip-start, -h|--help]
+    echo './update.sh [-c|--check, --ours, --gc, --nightly, --prefetch, --skip-start, --skip-ping-check, --stable, -f|--force, -d|--dev, -h|--help]
 
   -c|--check           -   Check for updates and exit (exit codes => 0: update available, 3: no updates)
   --ours               -   Use merge strategy option "ours" to solve conflicts in favor of non-mailcow code (local changes over remote changes), not recommended!
   --gc                 -   Run garbage collector to delete old image tags
-  --no-update-compose  -   Do not update docker-compose
+  --nightly            -   Switch your mailcow updates to the unstable (nightly) branch. FOR TESTING PURPOSES ONLY!!!!
   --prefetch           -   Only prefetch new images and exit (useful to prepare updates)
   --skip-start         -   Do not start mailcow after update
+  --skip-ping-check    -   Skip ICMP Check to public DNS resolvers (Use it only if you´ve blocked any ICMP Connections to your mailcow machine)
+  --stable             -   Switch your mailcow updates to the stable (mailman3) branch. Default unless you changed it with --nightly.
   -f|--force           -   Force update, do not ask questions
+  -d|--dev             -   Enables Developer Mode (No Checkout of update.sh for tests)
 '
     exit 1
   esac
   shift
 done
 
-[[ ! -f mailcow.conf ]] && { echo "mailcow.conf is missing"; exit 1;}
 chmod 600 mailcow.conf
 source mailcow.conf
+
+detect_docker_compose_command
+
+[[ ! -f mailcow.conf ]] && { echo "mailcow.conf is missing! Is mailcow installed?"; exit 1;}
 DOTS=${MAILCOW_HOSTNAME//[^.]};
 if [ ${#DOTS} -lt 2 ]; then
   echo "MAILCOW_HOSTNAME (${MAILCOW_HOSTNAME}) is not a FQDN!"
-  echo "Please change it to a FQDN and run docker-compose down followed by docker-compose up -d"
+  echo "Please change it to a FQDN and run $COMPOSE_COMMAND down followed by $COMPOSE_COMMAND up -d"
   exit 1
 fi
 
-if grep --help 2>&1 | head -n 1 | grep -q -i "busybox"; then echo "BusybBox grep detected, please install gnu grep, \"apk add --no-cache --upgrade grep\""; exit 1; fi
-if cp --help 2>&1 | head -n 1 | grep -q -i "busybox"; then echo "BusybBox cp detected, please install coreutils, \"apk add --no-cache --upgrade coreutils\""; exit 1; fi
+if grep --help 2>&1 | head -n 1 | grep -q -i "busybox"; then echo "BusyBox grep detected, please install gnu grep, \"apk add --no-cache --upgrade grep\""; exit 1; fi
+# This will also cover sort
+if cp --help 2>&1 | head -n 1 | grep -q -i "busybox"; then echo "BusyBox cp detected, please install coreutils, \"apk add --no-cache --upgrade coreutils\""; exit 1; fi
+if sed --help 2>&1 | head -n 1 | grep -q -i "busybox"; then echo "BusyBox sed detected, please install gnu sed, \"apk add --no-cache --upgrade sed\""; exit 1; fi
 
 CONFIG_ARRAY=(
   "SKIP_LETS_ENCRYPT"
@@ -189,6 +436,7 @@ CONFIG_ARRAY=(
   "WATCHDOG_NOTIFY_EMAIL"
   "WATCHDOG_NOTIFY_BAN"
   "WATCHDOG_EXTERNAL_CHECKS"
+  "WATCHDOG_SUBJECT"
   "SKIP_CLAMD"
   "SKIP_IP_CHECK"
   "ADDITIONAL_SAN"
@@ -199,6 +447,7 @@ CONFIG_ARRAY=(
   "SNAT_TO_SOURCE"
   "SNAT6_TO_SOURCE"
   "COMPOSE_PROJECT_NAME"
+  "DOCKER_COMPOSE_VERSION"
   "SQL_PORT"
   "API_KEY"
   "API_KEY_READ_ONLY"
@@ -213,9 +462,19 @@ CONFIG_ARRAY=(
   "SKIP_HTTP_VERIFICATION"
   "SOGO_EXPIRE_SESSION"
   "REDIS_PORT"
+  "DOVECOT_MASTER_USER"
+  "DOVECOT_MASTER_PASS"
+  "MAILCOW_PASS_SCHEME"
+  "ADDITIONAL_SERVER_NAMES"
+  "ACME_CONTACT"
+  "WATCHDOG_VERBOSE"
+  "WEBAUTHN_ONLY_TRUSTED_VENDORS"
+  "SPAMHAUS_DQS_KEY"
 )
 
-sed -i '$a\' mailcow.conf
+detect_bad_asn
+
+sed -i --follow-symlinks '$a\' mailcow.conf
 for option in ${CONFIG_ARRAY[@]}; do
   if [[ ${option} == "ADDITIONAL_SAN" ]]; then
     if ! grep -q ${option} mailcow.conf; then
@@ -226,6 +485,17 @@ for option in ${CONFIG_ARRAY[@]}; do
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
       echo "COMPOSE_PROJECT_NAME=mailcowdockerized" >> mailcow.conf
+    fi
+  elif [[ ${option} == "DOCKER_COMPOSE_VERSION" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo "# Used Docker Compose version" >> mailcow.conf
+      echo "# Switch here between native (compose plugin) and standalone" >> mailcow.conf
+      echo "# For more informations take a look at the mailcow docs regarding the configuration options." >> mailcow.conf
+      echo "# Normally this should be untouched but if you decided to use either of those you can switch it manually here." >> mailcow.conf
+      echo "# Please be aware that at least one of those variants should be installed on your maschine or mailcow will fail." >> mailcow.conf
+      echo "" >> mailcow.conf
+      echo "DOCKER_COMPOSE_VERSION=${DOCKER_COMPOSE_VERSION}" >> mailcow.conf
     fi
   elif [[ ${option} == "DOVEADM_PORT" ]]; then
     if ! grep -q ${option} mailcow.conf; then
@@ -317,7 +587,7 @@ for option in ${CONFIG_ARRAY[@]}; do
       echo '# Solr is a prone to run OOM on large systems and should be monitored. Unmonitored Solr setups are not recommended.' >> mailcow.conf
       echo '# Solr will refuse to start with total system memory below or equal to 2 GB.' >> mailcow.conf
       echo "SOLR_HEAP=1024" >> mailcow.conf
-  fi
+    fi
   elif [[ ${option} == "SKIP_SOLR" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
@@ -345,13 +615,19 @@ for option in ${CONFIG_ARRAY[@]}; do
       echo '# MAILDIR_SUB defines a path in a users virtual home to keep the maildir in. Leave empty for updated setups.' >> mailcow.conf
       echo "#MAILDIR_SUB=Maildir" >> mailcow.conf
       echo "MAILDIR_SUB=" >> mailcow.conf
-  fi
+    fi
   elif [[ ${option} == "WATCHDOG_NOTIFY_BAN" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
       echo '# Notify about banned IP. Includes whois lookup.' >> mailcow.conf
       echo "WATCHDOG_NOTIFY_BAN=y" >> mailcow.conf
-  fi
+    fi
+  elif [[ ${option} == "WATCHDOG_SUBJECT" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Subject for watchdog mails. Defaults to "Watchdog ALERT" followed by the error message.' >> mailcow.conf
+      echo "#WATCHDOG_SUBJECT=" >> mailcow.conf
+    fi
   elif [[ ${option} == "WATCHDOG_EXTERNAL_CHECKS" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
@@ -359,66 +635,216 @@ for option in ${CONFIG_ARRAY[@]}; do
       echo '# No data is collected. Opt-in and anonymous.' >> mailcow.conf
       echo '# Will only work with unmodified mailcow setups.' >> mailcow.conf
       echo "WATCHDOG_EXTERNAL_CHECKS=n" >> mailcow.conf
-  fi
+    fi
   elif [[ ${option} == "SOGO_EXPIRE_SESSION" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
       echo '# SOGo session timeout in minutes' >> mailcow.conf
       echo "SOGO_EXPIRE_SESSION=480" >> mailcow.conf
-  fi
+    fi
   elif [[ ${option} == "REDIS_PORT" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
       echo "REDIS_PORT=127.0.0.1:7654" >> mailcow.conf
-  fi
+    fi
+  elif [[ ${option} == "DOVECOT_MASTER_USER" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# DOVECOT_MASTER_USER and _PASS must _both_ be provided. No special chars.' >> mailcow.conf
+      echo '# Empty by default to auto-generate master user and password on start.' >> mailcow.conf
+      echo '# User expands to DOVECOT_MASTER_USER@mailcow.local' >> mailcow.conf
+      echo '# LEAVE EMPTY IF UNSURE' >> mailcow.conf
+      echo "DOVECOT_MASTER_USER=" >> mailcow.conf
+    fi
+  elif [[ ${option} == "DOVECOT_MASTER_PASS" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# LEAVE EMPTY IF UNSURE' >> mailcow.conf
+      echo "DOVECOT_MASTER_PASS=" >> mailcow.conf
+    fi
+  elif [[ ${option} == "MAILCOW_PASS_SCHEME" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Password hash algorithm' >> mailcow.conf
+      echo '# Only certain password hash algorithm are supported. For a fully list of supported schemes,' >> mailcow.conf
+      echo '# see https://docs.mailcow.email/models/model-passwd/' >> mailcow.conf
+      echo "MAILCOW_PASS_SCHEME=BLF-CRYPT" >> mailcow.conf
+    fi
+  elif [[ ${option} == "ADDITIONAL_SERVER_NAMES" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Additional server names for mailcow UI' >> mailcow.conf
+      echo '#' >> mailcow.conf
+      echo '# Specify alternative addresses for the mailcow UI to respond to' >> mailcow.conf
+      echo '# This is useful when you set mail.* as ADDITIONAL_SAN and want to make sure mail.maildomain.com will always point to the mailcow UI.' >> mailcow.conf
+      echo '# If the server name does not match a known site, Nginx decides by best-guess and may redirect users to the wrong web root.' >> mailcow.conf
+      echo '# You can understand this as server_name directive in Nginx.' >> mailcow.conf
+      echo '# Comma separated list without spaces! Example: ADDITIONAL_SERVER_NAMES=a.b.c,d.e.f' >> mailcow.conf
+      echo 'ADDITIONAL_SERVER_NAMES=' >> mailcow.conf
+    fi
+  elif [[ ${option} == "ACME_CONTACT" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Lets Encrypt registration contact information' >> mailcow.conf
+      echo '# Optional: Leave empty for none' >> mailcow.conf
+      echo '# This value is only used on first order!' >> mailcow.conf
+      echo '# Setting it at a later point will require the following steps:' >> mailcow.conf
+      echo '# https://docs.mailcow.email/troubleshooting/debug-reset_tls/' >> mailcow.conf
+      echo 'ACME_CONTACT=' >> mailcow.conf
+    fi
+  elif [[ ${option} == "WEBAUTHN_ONLY_TRUSTED_VENDORS" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo "# WebAuthn device manufacturer verification" >> mailcow.conf
+      echo '# After setting WEBAUTHN_ONLY_TRUSTED_VENDORS=y only devices from trusted manufacturers are allowed' >> mailcow.conf
+      echo '# root certificates can be placed for validation under mailcow-dockerized/data/web/inc/lib/WebAuthn/rootCertificates' >> mailcow.conf
+      echo 'WEBAUTHN_ONLY_TRUSTED_VENDORS=n' >> mailcow.conf
+    fi
+  elif [[ ${option} == "SPAMHAUS_DQS_KEY" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo "# Spamhaus Data Query Service Key" >> mailcow.conf
+      echo '# Optional: Leave empty for none' >> mailcow.conf
+      echo '# Enter your key here if you are using a blocked ASN (OVH, AWS, Cloudflare e.g) for the unregistered Spamhaus Blocklist.' >> mailcow.conf
+      echo '# If empty, it will completely disable Spamhaus blocklists if it detects that you are running on a server using a blocked AS.' >> mailcow.conf
+      echo '# Otherwise it will work as usual.' >> mailcow.conf
+      echo 'SPAMHAUS_DQS_KEY=' >> mailcow.conf
+    fi
+  elif [[ ${option} == "WATCHDOG_VERBOSE" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Enable watchdog verbose logging' >> mailcow.conf
+      echo 'WATCHDOG_VERBOSE=n' >> mailcow.conf
+    fi
   elif ! grep -q ${option} mailcow.conf; then
     echo "Adding new option \"${option}\" to mailcow.conf"
     echo "${option}=n" >> mailcow.conf
   fi
 done
 
-echo -en "Checking internet connection... "
-if ! check_online_status; then
-  echo -e "\e[31mfailed\e[0m"
-  exit 1
+if [[( ${SKIP_PING_CHECK} == "y")]]; then
+echo -e "\e[32mSkipping Ping Check...\e[0m"
+
 else
-  echo -e "\e[32mOK\e[0m"
+   echo -en "Checking internet connection... "
+   if ! check_online_status; then
+      echo -e "\e[31mfailed\e[0m"
+      exit 1
+   else
+      echo -e "\e[32mOK\e[0m"
+   fi
 fi
 
-echo -e "\e[32mChecking for newer update script...\e[0m"
-SHA1_1=$(sha1sum update.sh)
-git fetch origin #${BRANCH}
-git checkout origin/${BRANCH} update.sh
-SHA1_2=$(sha1sum update.sh)
-if [[ ${SHA1_1} != ${SHA1_2} ]]; then
-  echo "update.sh changed, please run this script again, exiting."
-  chmod +x update.sh
-  exit 2
+if ! [ $NEW_BRANCH ]; then
+  echo -e "\e[33mDetecting which build your mailcow runs on...\e[0m"
+  sleep 1
+  if [ ${BRANCH} == "mailman3" ]; then
+    echo -e "\e[32mYou are receiving stable updates (mailman3).\e[0m"
+    echo -e "\e[33mTo change that run the update.sh Script one time with the --nightly parameter to switch to nightly builds.\e[0m"
+
+  elif [ ${BRANCH} == "nightly" ]; then
+    echo -e "\e[31mYou are receiving unstable updates (nightly). These are for testing purposes only!!!\e[0m"
+    sleep 1
+    echo -e "\e[33mTo change that run the update.sh Script one time with the --stable parameter to switch to stable builds.\e[0m"
+
+  else
+    echo -e "\e[33mYou are receiving updates from a unsupported branch.\e[0m"
+    sleep 1
+    echo -e "\e[33mThe mailcow stack might still work but it is recommended to switch to the mailman3 branch (stable builds).\e[0m"
+    echo -e "\e[33mTo change that run the update.sh Script one time with the --stable parameter to switch to stable builds.\e[0m"
+  fi
+elif [ $FORCE ]; then
+  echo -e "\e[31mYou are running in forced mode!\e[0m"
+  echo -e "\e[31mA Branch Switch can only be performed manually (monitored).\e[0m"
+  echo -e "\e[31mPlease rerun the update.sh Script without the --force/-f parameter.\e[0m"
+  sleep 1
+elif [ $NEW_BRANCH == "mailman3" ] && [ $CURRENT_BRANCH != "mailman3" ]; then
+  echo -e "\e[33mYou are about to switch your mailcow Updates to the stable (mailman3) branch.\e[0m"
+  sleep 1
+  echo -e "\e[33mBefore you do: Please take a backup of all components to ensure that no Data is lost...\e[0m"
+  sleep 1
+  echo -e "\e[31mWARNING: Please see on GitHub or ask in the communitys if a switch to mailman3 is stable or not.
+  In some rear cases a Update back to mailman3 can destroy your mailcow configuration in case of Database Upgrades etc.
+  Normally a upgrade back to mailman3 should be safe during each full release. 
+  Check GitHub for Database Changes and Update only if there similar to the full release!\e[0m"
+  read -r -p "Are you sure you that want to continue upgrading to the stable (mailman3) branch? [y/N] " response
+  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
+    echo "OK. If you prepared yourself for that please run the update.sh Script with the --stable parameter again to trigger this process here."
+    exit 0
+  fi
+  BRANCH=$NEW_BRANCH
+  DIFF_DIRECTORY=update_diffs
+  DIFF_FILE=${DIFF_DIRECTORY}/diff_before_upgrade_to_mailman3_$(date +"%Y-%m-%d-%H-%M-%S")
+  mv diff_before_upgrade* ${DIFF_DIRECTORY}/ 2> /dev/null
+  if ! git diff-index --quiet HEAD; then
+    echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
+    mkdir -p ${DIFF_DIRECTORY}
+    git diff ${BRANCH} --stat > ${DIFF_FILE}
+    git diff ${BRANCH} >> ${DIFF_FILE}
+  fi
+  echo -e "\e[32mSwitching Branch to ${BRANCH}...\e[0m"
+  git fetch origin
+  git checkout -f ${BRANCH}
+
+elif [ $NEW_BRANCH == "nightly" ] && [ $CURRENT_BRANCH != "nightly" ]; then
+  echo -e "\e[33mYou are about to switch your mailcow Updates to the unstable (nightly) branch.\e[0m"
+  sleep 1
+  echo -e "\e[33mBefore you do: Please take a backup of all components to ensure that no Data is lost...\e[0m"
+  sleep 1
+  echo -e "\e[31mWARNING: A switch to nightly is possible any time. But a switch back (to mailman3) isn't.\e[0m"
+  read -r -p "Are you sure you that want to continue upgrading to the unstable (nightly) branch? [y/N] " response
+  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
+    echo "OK. If you prepared yourself for that please run the update.sh Script with the --nightly parameter again to trigger this process here."
+    exit 0
+  fi
+  BRANCH=$NEW_BRANCH
+  DIFF_DIRECTORY=update_diffs
+  DIFF_FILE=${DIFF_DIRECTORY}/diff_before_upgrade_to_nightly_$(date +"%Y-%m-%d-%H-%M-%S")
+  mv diff_before_upgrade* ${DIFF_DIRECTORY}/ 2> /dev/null
+  if ! git diff-index --quiet HEAD; then
+    echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
+    mkdir -p ${DIFF_DIRECTORY}
+    git diff ${BRANCH} --stat > ${DIFF_FILE}
+    git diff ${BRANCH} >> ${DIFF_FILE}
+  fi
+  git fetch origin
+  git checkout -f ${BRANCH}
 fi
 
-if [[ -f mailcow.conf ]]; then
-  source mailcow.conf
-else
-  echo -e "\e[31mNo mailcow.conf - is mailcow installed?\e[0m"
-  exit 1
+if [ ! $DEV ]; then
+  echo -e "\e[32mChecking for newer update script...\e[0m"
+  SHA1_1=$(sha1sum update.sh)
+  git fetch origin #${BRANCH}
+  git checkout origin/${BRANCH} update.sh
+  SHA1_2=$(sha1sum update.sh)
+  if [[ ${SHA1_1} != ${SHA1_2} ]]; then
+    echo "update.sh changed, please run this script again, exiting."
+    chmod +x update.sh
+    exit 2
+  fi
 fi
 
 if [ ! $FORCE ]; then
   read -r -p "Are you sure you want to update mailcow: dockerized? All containers will be stopped. [y/N] " response
-  if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
+  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
     echo "OK, exiting."
     exit 0
   fi
+  migrate_docker_nat
 fi
 
+remove_obsolete_nginx_ports
+
 echo -e "\e[32mValidating docker-compose stack configuration...\e[0m"
-if ! docker-compose config -q; then
+sed -i 's/HTTPS_BIND:-:/HTTPS_BIND:-/g' docker-compose.yml
+sed -i 's/HTTP_BIND:-:/HTTP_BIND:-/g' docker-compose.yml
+if ! $COMPOSE_COMMAND config -q; then
   echo -e "\e[31m\nOh no, something went wrong. Please check the error message above.\e[0m"
   exit 1
 fi
 
 echo -e "\e[32mChecking for conflicting bridges...\e[0m"
-MAILCOW_BRIDGE=$(docker-compose config | grep -i com.docker.network.bridge.name | cut -d':' -f2)
+MAILCOW_BRIDGE=$($COMPOSE_COMMAND config | grep -i com.docker.network.bridge.name | cut -d':' -f2)
 while read NAT_ID; do
   iptables -t nat -D POSTROUTING $NAT_ID
 done < <(iptables -L -vn -t nat --line-numbers | grep $IPV4_NETWORK | grep -E 'MASQUERADE.*all' | grep -v ${MAILCOW_BRIDGE} | cut -d' ' -f1)
@@ -438,16 +864,18 @@ prefetch_images
 
 echo -e "\e[32mStopping mailcow...\e[0m"
 sleep 2
-MAILCOW_CONTAINERS=($(docker-compose ps -q))
-docker-compose down
+MAILCOW_CONTAINERS=($($COMPOSE_COMMAND ps -q))
+$COMPOSE_COMMAND down
 echo -e "\e[32mChecking for remaining containers...\e[0m"
 sleep 2
 for container in "${MAILCOW_CONTAINERS[@]}"; do
   docker rm -f "$container" 2> /dev/null
 done
 
+[[ -f data/conf/nginx/ZZZ-ejabberd.conf ]] && rm data/conf/nginx/ZZZ-ejabberd.conf
+
 # Silently fixing remote url from andryyy to mailcow
-git remote set-url origin https://github.com/mailcow/mailcow-dockerized
+git remote set-url origin https://github.com/siesta-it-admins/tsg-mailcow
 echo -e "\e[32mCommitting current status...\e[0m"
 [[ -z "$(git config user.name)" ]] && git config user.name moo
 [[ -z "$(git config user.email)" ]] && git config user.email moo@cow.moo
@@ -474,38 +902,13 @@ elif [[ ${MERGE_RETURN} == 1 ]]; then
 elif [[ ${MERGE_RETURN} != 0 ]]; then
   echo -e "\e[31m\nOh no, something went wrong. Please check the error message above.\e[0m"
   echo
-  echo "Run docker-compose up -d to restart your stack without updates or try again after fixing the mentioned errors."
+  echo "Run $COMPOSE_COMMAND up -d to restart your stack without updates or try again after fixing the mentioned errors."
   exit 1
-fi
-
-if [[ ${NO_UPDATE_COMPOSE} == "y" ]]; then
-  echo -e "\e[33mNot fetching latest docker-compose, please check for updates manually!\e[0m"
-else
-  echo -e "\e[32mFetching new docker-compose version...\e[0m"
-  sleep 1
-  if [[ ! -z $(which pip) && $(pip list --local 2>&1 | grep -v DEPRECATION | grep -c docker-compose) == 1 ]]; then
-    true
-    #prevent breaking a working docker-compose installed with pip
-  elif [[ $(curl -sL -w "%{http_code}" https://www.servercow.de/docker-compose/latest.php -o /dev/null) == "200" ]]; then
-    LATEST_COMPOSE=$(curl -#L https://www.servercow.de/docker-compose/latest.php)
-    COMPOSE_VERSION=$(docker-compose version --short)
-    if [[ "$LATEST_COMPOSE" != "$COMPOSE_VERSION" ]]; then
-      COMPOSE_PATH=$(which docker-compose)
-      if [[ -w ${COMPOSE_PATH} ]]; then
-        curl -#L https://github.com/docker/compose/releases/download/${LATEST_COMPOSE}/docker-compose-$(uname -s)-$(uname -m) > $COMPOSE_PATH
-        chmod +x $COMPOSE_PATH
-      else
-        echo -e "\e[33mWARNING: $COMPOSE_PATH is not writable, but new version $LATEST_COMPOSE is available (installed: $COMPOSE_VERSION)\e[0m"
-      fi
-    fi
-  else
-    echo -e "\e[33mCannot determine latest docker-compose version, skipping...\e[0m"
-  fi
 fi
 
 echo -e "\e[32mFetching new images, if any...\e[0m"
 sleep 2
-docker-compose pull
+$COMPOSE_COMMAND pull
 
 # Fix missing SSL, does not overwrite existing files
 [[ ! -d data/assets/ssl ]] && mkdir -p data/assets/ssl
@@ -517,7 +920,7 @@ if grep -q 'SYSCTL_IPV6_DISABLED=1' mailcow.conf; then
   echo '!! IMPORTANT !!'
   echo
   echo 'SYSCTL_IPV6_DISABLED was removed due to complications. IPv6 can be disabled by editing "docker-compose.yml" and setting "enable_ipv6: true" to "enable_ipv6: false".'
-  echo 'This setting will only be active after a complete shutdown of mailcow by running "docker-compose down" followed by "docker-compose up -d".'
+  echo "This setting will only be active after a complete shutdown of mailcow by running $COMPOSE_COMMAND down followed by $COMPOSE_COMMAND up -d."
   echo
   echo '!! IMPORTANT !!'
   echo
@@ -525,7 +928,7 @@ if grep -q 'SYSCTL_IPV6_DISABLED=1' mailcow.conf; then
 fi
 
 # Checking for old project name bug
-sed -i 's#COMPOSEPROJECT_NAME#COMPOSE_PROJECT_NAME#g' mailcow.conf
+sed -i --follow-symlinks 's#COMPOSEPROJECT_NAME#COMPOSE_PROJECT_NAME#g' mailcow.conf
 
 # Fix Rspamd maps
 if [ -f data/conf/rspamd/custom/global_from_blacklist.map ]; then
@@ -537,26 +940,72 @@ fi
 
 # Fix deprecated metrics.conf
 if [ -f "data/conf/rspamd/local.d/metrics.conf" ]; then
-  if [ ! -z "$(git diff --name-only origin/master data/conf/rspamd/local.d/metrics.conf)" ]; then
+  if [ ! -z "$(git diff --name-only origin/mailman3 data/conf/rspamd/local.d/metrics.conf)" ]; then
     echo -e "\e[33mWARNING\e[0m - Please migrate your customizations of data/conf/rspamd/local.d/metrics.conf to actions.conf and groups.conf after this update."
     echo "The deprecated configuration file metrics.conf will be moved to metrics.conf_deprecated after updating mailcow."
   fi
   mv data/conf/rspamd/local.d/metrics.conf data/conf/rspamd/local.d/metrics.conf_deprecated
 fi
 
+# Set app_info.inc.php
+if [ ${BRANCH} == "mailman3" ]; then
+  mailcow_git_version=$(git describe --tags `git rev-list --tags --max-count=1`)
+elif [ ${BRANCH} == "nightly" ]; then
+  mailcow_git_version=$(git rev-parse --short $(git rev-parse @{upstream}))
+  mailcow_last_git_version=""
+else
+  mailcow_git_version=$(git rev-parse --short HEAD)
+  mailcow_last_git_version=""
+fi
+
+mailcow_git_commit=$(git rev-parse origin/${BRANCH})
+mailcow_git_commit_date=$(git log -1 --format=%ci @{upstream} )
+
+if [ $? -eq 0 ]; then
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="'$mailcow_git_version'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_LAST_GIT_VERSION="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_OWNER="mailcow";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_REPO="mailcow-dockerized";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="https://github.com/siesta-it-admins/tsg-mailcow";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_COMMIT="'$mailcow_git_commit'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_COMMIT_DATE="'$mailcow_git_commit_date'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_BRANCH="'$BRANCH'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_UPDATEDAT='$(date +%s)';' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+else
+  echo '<?php' > data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_VERSION="'$mailcow_git_version'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_LAST_GIT_VERSION="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_OWNER="mailcow";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_REPO="mailcow-dockerized";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_URL="https://github.com/siesta-it-admins/tsg-mailcow";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_COMMIT="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_GIT_COMMIT_DATE="";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_BRANCH="'$BRANCH'";' >> data/web/inc/app_info.inc.php
+  echo '  $MAILCOW_UPDATEDAT='$(date +%s)';' >> data/web/inc/app_info.inc.php
+  echo '?>' >> data/web/inc/app_info.inc.php
+  echo -e "\e[33mCannot determine current git repository version...\e[0m"
+fi
+
 if [[ ${SKIP_START} == "y" ]]; then
-  echo -e "\e[33mNot starting mailcow, please run \"docker-compose up -d --remove-orphans\" to start mailcow.\e[0m"
+  echo -e "\e[33mNot starting mailcow, please run \"$COMPOSE_COMMAND up -d --remove-orphans\" to start mailcow.\e[0m"
 else
   echo -e "\e[32mStarting mailcow...\e[0m"
   sleep 2
-  docker-compose up -d --remove-orphans
+  $COMPOSE_COMMAND up -d --remove-orphans
 fi
 
 echo -e "\e[32mCollecting garbage...\e[0m"
 docker_garbage
 
-#echo "In case you encounter any problem, hard-reset to a state before updating mailcow:"
-#echo
-#git reflog --color=always | grep "Before update on "
-#echo
-#echo "Use \"git reset --hard hash-on-the-left\" and run docker-compose up -d afterwards."
+# Run post-update-hook
+if [ -f "${SCRIPT_DIR}/post_update_hook.sh" ]; then
+  bash "${SCRIPT_DIR}/post_update_hook.sh"
+fi
+
+# echo "In case you encounter any problem, hard-reset to a state before updating mailcow:"
+# echo
+# git reflog --color=always | grep "Before update on "
+# echo
+# echo "Use \"git reset --hard hash-on-the-left\" and run $COMPOSE_COMMAND up -d afterwards."

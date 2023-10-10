@@ -1,7 +1,3 @@
-table.footable>tbody>tr.footable-empty>td {
-  font-size:15px !important;
-  font-style:italic;
-}
 .pagination a {
   text-decoration: none !important;
 }
@@ -30,7 +26,6 @@ table.footable>tbody>tr.footable-empty>td {
 }
 .mass-actions-debug {
   user-select: none;
-  padding:10px 0 10px 10px;
 }
 .inputMissingAttr {
   border-color: #FF4136;
@@ -38,10 +33,4 @@ table.footable>tbody>tr.footable-empty>td {
 .table-lines {
   vertical-align: inherit;
 }
-tbody {
-  font-size:14px;
-}
-.container-indicator {
-  width: 15px;
-  height: 15px;
-}
+

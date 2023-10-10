@@ -35,7 +35,7 @@ SELECT
    mailbox.username,
    mailbox.domain,
    mailbox.username,
-   if(json_extract(attributes, '$.force_pw_update') LIKE '%0%', if(json_extract(attributes, '$.sogo_access') LIKE '%1%', password, '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'), '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'),
+   IF(JSON_UNQUOTE(JSON_VALUE(attributes, '$.force_pw_update')) = '0', IF(JSON_UNQUOTE(JSON_VALUE(attributes, '$.sogo_access')) = 1, password, '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'), '{SSHA256}A123A123A321A321A321B321B321B123B123B321B432F123E321123123321321'),
    mailbox.name,
    mailbox.username,
    IFNULL(GROUP_CONCAT(ga.aliases ORDER BY ga.aliases SEPARATOR ' '), ''),
@@ -84,6 +84,7 @@ if [[ "${MASTER}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
     if [[ ! -z $(mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -B -e "SELECT 'OK' FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '_sogo_static_view'") ]]; then
       STATIC_VIEW_OK=OK
       echo "Updating _sogo_static_view content..."
+      # If changed, also update init_db.inc.php
       mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -B -e "REPLACE INTO _sogo_static_view (c_uid, domain, c_name, c_password, c_cn, mail, aliases, ad_aliases, ext_acl, kind, multiple_bookings) SELECT c_uid, domain, c_name, c_password, c_cn, mail, aliases, ad_aliases, ext_acl, kind, multiple_bookings from sogo_view;"
       mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${DBNAME} -B -e "DELETE FROM _sogo_static_view WHERE c_uid NOT IN (SELECT username FROM mailbox WHERE active = '1')"
     else
@@ -127,11 +128,6 @@ EOF
   done
 fi
 
-if [[ "${ALLOW_ADMIN_EMAIL_LOGIN}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
-  TRUST_PROXY="YES"
-else
-  TRUST_PROXY="NO"
-fi
 # cat /dev/urandom seems to hang here occasionally and is not recommended anyway, better use openssl
 RAND_PASS=$(openssl rand -base64 16 | tr -dc _A-Z-a-z-0-9)
 
@@ -145,9 +141,13 @@ cat <<EOF > /var/lib/sogo/GNUstep/Defaults/sogod.plist
     <key>OCSAclURL</key>
     <string>mysql://${DBUSER}:${DBPASS}@%2Fvar%2Frun%2Fmysqld%2Fmysqld.sock/${DBNAME}/sogo_acl</string>
     <key>SOGoIMAPServer</key>
-    <string>imap://${IPV4_NETWORK}.250:143/?TLS=NO</string>
+    <string>imap://${IPV4_NETWORK}.250:143/?TLS=YES&amp;tlsVerifyMode=none</string>
+    <key>SOGoSieveServer</key>
+    <string>sieve://${IPV4_NETWORK}.250:4190/?TLS=YES&amp;tlsVerifyMode=none</string>
+    <key>SOGoSMTPServer</key>
+    <string>smtp://${IPV4_NETWORK}.253:588/?TLS=YES&amp;tlsVerifyMode=none</string>
     <key>SOGoTrustProxyAuthentication</key>
-    <string>${TRUST_PROXY}</string>
+    <string>YES</string>
     <key>SOGoEncryptionKey</key>
     <string>${RAND_PASS}</string>
     <key>OCSCacheFolderURL</key>
@@ -203,7 +203,7 @@ while read -r line gal
                     <key>type</key>
                     <string>sql</string>
                     <key>userPasswordAlgorithm</key>
-                    <string>ssha256</string>
+                    <string>${MAILCOW_PASS_SCHEME}</string>
                     <key>prependPasswordScheme</key>
                     <string>YES</string>
                     <key>viewURL</key>
@@ -247,15 +247,5 @@ rsync -a /usr/lib/GNUstep/SOGo/. /sogo_web/
 
 # Chown backup path
 chown -R sogo:sogo /sogo_backup
-
-# Creating cronjobs
-if [[ "${MASTER}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
-  echo "* * * * *   sogo   /usr/sbin/sogo-ealarms-notify -p /etc/sogo/sieve.creds 2>/dev/null" > /etc/cron.d/sogo
-  echo "* * * * *   sogo   /usr/sbin/sogo-tool expire-sessions ${SOGO_EXPIRE_SESSION}" >> /etc/cron.d/sogo
-  echo "0 0 * * *   sogo   /usr/sbin/sogo-tool update-autoreply -p /etc/sogo/sieve.creds" >> /etc/cron.d/sogo
-  echo "0 2 * * *   sogo   /usr/sbin/sogo-tool backup /sogo_backup ALL" >> /etc/cron.d/sogo
-else
-  rm /etc/cron.d/sogo
-fi
 
 exec gosu sogo /usr/sbin/sogod

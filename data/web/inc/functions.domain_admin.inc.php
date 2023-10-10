@@ -65,61 +65,38 @@ function domain_admin($_action, $_data = null) {
           return false;
         }
       }
-      if (!empty($password) && !empty($password2)) {
-        if (!preg_match('/' . $GLOBALS['PASSWD_REGEP'] . '/', $password)) {
-          $_SESSION['return'][] = array(
-            'type' => 'danger',
-            'log' => array(__FUNCTION__, $_action, $_data_log),
-            'msg' => 'password_complexity'
-          );
-          return false;
-        }
-        if ($password != $password2) {
-          $_SESSION['return'][] = array(
-            'type' => 'danger',
-            'log' => array(__FUNCTION__, $_action, $_data_log),
-            'msg' => 'password_mismatch'
-          );
-          return false;
-        }
-        $password_hashed = hash_password($password);
-        $valid_domains = 0;
-        foreach ($domains as $domain) {
-          if (!is_valid_domain_name($domain) || mailbox('get', 'domain_details', $domain) === false) {
-            $_SESSION['return'][] = array(
-              'type' => 'danger',
-              'log' => array(__FUNCTION__, $_action, $_data_log),
-              'msg' => array('domain_invalid', htmlspecialchars($domain))
-            );
-            continue;
-          }
-          $valid_domains++;
-          $stmt = $pdo->prepare("INSERT INTO `domain_admins` (`username`, `domain`, `created`, `active`)
-              VALUES (:username, :domain, :created, :active)");
-          $stmt->execute(array(
-            ':username' => $username,
-            ':domain' => $domain,
-            ':created' => date('Y-m-d H:i:s'),
-            ':active' => $active
-          ));
-        }
-        if ($valid_domains != 0) {
-          $stmt = $pdo->prepare("INSERT INTO `admin` (`username`, `password`, `superadmin`, `active`)
-            VALUES (:username, :password_hashed, '0', :active)");
-          $stmt->execute(array(
-            ':username' => $username,
-            ':password_hashed' => $password_hashed,
-            ':active' => $active
-          ));
-        }
+      if (password_check($password, $password2) !== true) {
+        continue;
       }
-      else {
-        $_SESSION['return'][] = array(
-          'type' => 'danger',
-          'log' => array(__FUNCTION__, $_action, $_data_log),
-          'msg' => 'password_empty'
-        );
-        return false;
+      $password_hashed = hash_password($password);
+      $valid_domains = 0;
+      foreach ($domains as $domain) {
+        if (!is_valid_domain_name($domain) || mailbox('get', 'domain_details', $domain) === false) {
+          $_SESSION['return'][] = array(
+            'type' => 'danger',
+            'log' => array(__FUNCTION__, $_action, $_data_log),
+            'msg' => array('domain_invalid', htmlspecialchars($domain))
+          );
+          continue;
+        }
+        $valid_domains++;
+        $stmt = $pdo->prepare("INSERT INTO `domain_admins` (`username`, `domain`, `created`, `active`)
+            VALUES (:username, :domain, :created, :active)");
+        $stmt->execute(array(
+          ':username' => $username,
+          ':domain' => $domain,
+          ':created' => date('Y-m-d H:i:s'),
+          ':active' => $active
+        ));
+      }
+      if ($valid_domains != 0) {
+        $stmt = $pdo->prepare("INSERT INTO `admin` (`username`, `password`, `superadmin`, `active`)
+          VALUES (:username, :password_hashed, '0', :active)");
+        $stmt->execute(array(
+          ':username' => $username,
+          ':password_hashed' => $password_hashed,
+          ':active' => $active
+        ));
       }
       $stmt = $pdo->prepare("INSERT INTO `da_acl` (`username`) VALUES (:username)");
       $stmt->execute(array(
@@ -153,7 +130,7 @@ function domain_admin($_action, $_data = null) {
           $is_now = domain_admin('details', $username);
           $domains = (isset($_data['domains'])) ? (array)$_data['domains'] : null;
           if (!empty($is_now)) {
-            $active = (isset($_data['active'])) ? intval($_data['active']) : $is_now['active_int'];
+            $active = (isset($_data['active'])) ? intval($_data['active']) : $is_now['active'];
             $domains = (!empty($domains)) ? $domains : $is_now['selected_domains'];
             $username_new = (!empty($_data['username_new'])) ? $_data['username_new'] : $is_now['username'];
           }
@@ -218,22 +195,9 @@ function domain_admin($_action, $_data = null) {
               ));
             }
           }
-          if (!empty($password) && !empty($password2)) {
-            if (!preg_match('/' . $GLOBALS['PASSWD_REGEP'] . '/', $password)) {
-              $_SESSION['return'][] = array(
-                'type' => 'danger',
-                'log' => array(__FUNCTION__, $_action, $_data_log),
-                'msg' => 'password_complexity'
-              );
-              continue;
-            }
-            if ($password != $password2) {
-              $_SESSION['return'][] = array(
-                'type' => 'danger',
-                'log' => array(__FUNCTION__, $_action, $_data_log),
-                'msg' => 'password_mismatch'
-              );
-              continue;
+          if (!empty($password)) {
+            if (password_check($password, $password2) !== true) {
+              return false;
             }
             $password_hashed = hash_password($password);
             $stmt = $pdo->prepare("UPDATE `admin` SET `username` = :username_new, `active` = :active, `password` = :password_hashed WHERE `username` = :username");
@@ -296,30 +260,15 @@ function domain_admin($_action, $_data = null) {
           );
           return false;
         }
-        if (!empty($password_new2) && !empty($password_new)) {
-          if ($password_new2 != $password_new) {
-            $_SESSION['return'][] = array(
-              'type' => 'danger',
-              'log' => array(__FUNCTION__, $_action, $_data_log),
-              'msg' => 'password_mismatch'
-            );
-            return false;
-          }
-          if (!preg_match('/' . $GLOBALS['PASSWD_REGEP'] . '/', $password_new)) {
-            $_SESSION['return'][] = array(
-              'type' => 'danger',
-              'log' => array(__FUNCTION__, $_action, $_data_log),
-              'msg' => 'password_complexity'
-            );
-            return false;
-          }
-          $password_hashed = hash_password($password_new);
-          $stmt = $pdo->prepare("UPDATE `admin` SET `password` = :password_hashed WHERE `username` = :username");
-          $stmt->execute(array(
-            ':password_hashed' => $password_hashed,
-            ':username' => $username
-          ));
+        if (password_check($password_new, $password_new2) !== true) {
+          return false;
         }
+        $password_hashed = hash_password($password_new);
+        $stmt = $pdo->prepare("UPDATE `admin` SET `password` = :password_hashed WHERE `username` = :username");
+        $stmt->execute(array(
+          ':password_hashed' => $password_hashed,
+          ':username' => $username
+        ));
         $_SESSION['return'][] = array(
           'type' => 'success',
           'log' => array(__FUNCTION__, $_action, $_data_log),
@@ -355,6 +304,14 @@ function domain_admin($_action, $_data = null) {
           ':username' => $username,
         ));
         $stmt = $pdo->prepare("DELETE FROM `da_acl` WHERE `username` = :username");
+        $stmt->execute(array(
+          ':username' => $username,
+        ));
+        $stmt = $pdo->prepare("DELETE FROM `tfa` WHERE `username` = :username");
+        $stmt->execute(array(
+          ':username' => $username,
+        ));
+        $stmt = $pdo->prepare("DELETE FROM `fido2` WHERE `username` = :username");
         $stmt->execute(array(
           ':username' => $username,
         ));
@@ -400,12 +357,10 @@ function domain_admin($_action, $_data = null) {
         return false;
       }
       $stmt = $pdo->prepare("SELECT
-        `tfa`.`active` AS `tfa_active_int`,
-        CASE `tfa`.`active` WHEN 1 THEN '".$lang['mailbox']['yes']."' ELSE '".$lang['mailbox']['no']."' END AS `tfa_active`,
+        `tfa`.`active` AS `tfa_active`,
         `domain_admins`.`username`,
         `domain_admins`.`created`,
-        `domain_admins`.`active` AS `active_int`,
-        CASE `domain_admins`.`active` WHEN 1 THEN '".$lang['mailbox']['yes']."' ELSE '".$lang['mailbox']['no']."' END AS `active`
+        `domain_admins`.`active` AS `active`
           FROM `domain_admins`
           LEFT OUTER JOIN `tfa` ON `tfa`.`username`=`domain_admins`.`username`
             WHERE `domain_admins`.`username`= :domain_admin");
@@ -417,10 +372,10 @@ function domain_admin($_action, $_data = null) {
         return false;
       }
       $domainadmindata['username'] = $row['username'];
-      $domainadmindata['tfa_active'] = $row['tfa_active'];
+      $domainadmindata['tfa_active'] = (is_null($row['tfa_active'])) ? 0 : $row['tfa_active'];
+      $domainadmindata['tfa_active_int'] = (is_null($row['tfa_active'])) ? 0 : $row['tfa_active'];
       $domainadmindata['active'] = $row['active'];
-      $domainadmindata['tfa_active_int'] = $row['tfa_active_int'];
-      $domainadmindata['active_int'] = $row['active_int'];
+      $domainadmindata['active_int'] = $row['active'];
       $domainadmindata['created'] = $row['created'];
       // GET SELECTED
       $stmt = $pdo->prepare("SELECT `domain` FROM `domain`
@@ -447,6 +402,67 @@ function domain_admin($_action, $_data = null) {
       }
 
       return $domainadmindata;
+    break;
+  }
+}
+function domain_admin_sso($_action, $_data) {
+  global $pdo;
+
+  switch ($_action) {
+    case 'check':
+      $token = $_data;
+
+      $stmt = $pdo->prepare("SELECT `t1`.`username` FROM `da_sso` AS `t1` JOIN `admin` AS `t2` ON `t1`.`username` = `t2`.`username` WHERE `t1`.`token` = :token AND `t1`.`created` > DATE_SUB(NOW(), INTERVAL '30' SECOND) AND `t2`.`active` = 1 AND `t2`.`superadmin` = 0;");
+      $stmt->execute(array(
+        ':token' => preg_replace('/[^a-zA-Z0-9-]/', '', $token)
+      ));
+      $return = $stmt->fetch(PDO::FETCH_ASSOC);
+      return empty($return['username']) ? false : $return['username'];
+    case 'issue':
+      if ($_SESSION['mailcow_cc_role'] != "admin") {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_data),
+          'msg' => 'access_denied'
+        );
+        return false;
+      }
+
+      $username = $_data['username'];
+
+      $stmt = $pdo->prepare("SELECT `username` FROM `domain_admins`
+        WHERE `username` = :username");
+      $stmt->execute(array(':username' => $username));
+      $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
+
+      if ($num_results < 1) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_data),
+          'msg' => array('object_doesnt_exist', htmlspecialchars($username))
+        );
+        return false;
+      }
+
+      $token = implode('-', array(
+        strtoupper(bin2hex(random_bytes(3))),
+        strtoupper(bin2hex(random_bytes(3))),
+        strtoupper(bin2hex(random_bytes(3))),
+        strtoupper(bin2hex(random_bytes(3))),
+        strtoupper(bin2hex(random_bytes(3)))
+      ));
+
+      $stmt = $pdo->prepare("INSERT INTO `da_sso` (`username`, `token`)
+            VALUES (:username, :token)");
+      $stmt->execute(array(
+        ':username' => $username,
+        ':token' => $token
+      ));
+
+      // perform cleanup
+      $pdo->query("DELETE FROM `da_sso` WHERE created < DATE_SUB(NOW(), INTERVAL '30' SECOND);");
+
+      return ['token' => $token];
     break;
   }
 }
