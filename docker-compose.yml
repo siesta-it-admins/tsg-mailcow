@@ -112,6 +112,7 @@ services:
         - "${SQL_PORT:-127.0.0.1:13306}:3306"
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.100
           aliases:
             - mysql
 
@@ -151,6 +152,7 @@ services:
         - clamd-db-vol-1:/var/lib/clamav
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.101
           aliases:
             - clamd
 
@@ -181,6 +183,7 @@ services:
         - ${IPV4_NETWORK:-172.19.199}.254
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.102
           aliases:
             - rspamd
 
@@ -245,6 +248,7 @@ services:
       restart: always
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.103
           aliases:
             - phpfpm
 
@@ -425,6 +429,7 @@ services:
         - TZ=${TZ}
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.104
           aliases:
             - memcached
 
@@ -470,6 +475,7 @@ services:
       restart: always
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.105
           aliases:
             - nginx
 
@@ -508,6 +514,7 @@ services:
       restart: always
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.106
           aliases:
             - acme
 
@@ -596,6 +603,7 @@ services:
         - MAILQ_CRIT=${MAILQ_CRIT:-30}
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.107
           aliases:
             - watchdog
 
@@ -617,6 +625,7 @@ services:
         - /var/run/docker.sock:/var/run/docker.sock:ro
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.108
           aliases:
             - dockerapi
 
@@ -635,6 +644,7 @@ services:
         - SKIP_SOLR=${SKIP_SOLR:-y}
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.109
           aliases:
             - solr
 
@@ -655,6 +665,7 @@ services:
         - OLEFY_DEL_TMP=1
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.110
           aliases:
             - olefy
 
@@ -675,6 +686,7 @@ services:
         - /var/run/docker.sock:/var/run/docker.sock:ro
       networks:
         mailcow-network:
+          ipv4_address: ${IPV4_NETWORK:-172.19.199}.111
           aliases:
             - ofelia
 
