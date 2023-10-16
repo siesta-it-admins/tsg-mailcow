@@ -75,7 +75,7 @@ services:
             - database
 
     unbound-mailcow:
-      image: mailcow/unbound:1.17
+      image: mailcow/unbound:1.18
       environment:
         - TZ=${TZ}
       volumes:
@@ -136,12 +136,13 @@ services:
             - redis
 
     clamd-mailcow:
-      image: mailcow/clamd:1.61
+      image: mailcow/clamd:1.63
       depends_on:
         - mailman-web
       restart: always
       depends_on:
-        - unbound-mailcow
+        unbound-mailcow:
+          condition: service_healthy
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       environment:
@@ -188,7 +189,7 @@ services:
             - rspamd
 
     php-fpm-mailcow:
-      image: mailcow/phpfpm:1.84
+      image: mailcow/phpfpm:1.85
       command: "php-fpm -d date.timezone=${TZ} -d expose_php=0"
       depends_on:
         - redis-mailcow
@@ -302,7 +303,7 @@ services:
             - sogo
 
     dovecot-mailcow:
-      image: mailcow/dovecot:1.24
+      image: mailcow/dovecot:1.25
       depends_on:
         - mysql-mailcow
       dns:
@@ -382,10 +383,14 @@ services:
             - dovecot
 
     postfix-mailcow:
-      image: mailcow/postfix:1.71
+      image: mailcow/postfix:1.72
       depends_on:
-        - mysql-mailcow
-        - mailman-web
+        mysql-mailcow:
+          condition: service_started
+        unbound-mailcow:
+          condition: service_healthy
+        mailman-web:
+          condition: service_started
       volumes:
         - ./data/hooks/postfix:/hooks:Z
         - ./data/conf/postfix:/opt/postfix/conf:z
@@ -481,8 +486,11 @@ services:
 
     acme-mailcow:
       depends_on:
-        - nginx-mailcow
-      image: mailcow/acme:1.84
+        nginx-mailcow:
+          condition: service_started
+        unbound-mailcow:
+          condition: service_healthy
+      image: mailcow/acme:1.85
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       environment:
@@ -545,7 +553,7 @@ services:
     watchdog-mailcow:
       depends_on:
         - mailman-web
-      image: mailcow/watchdog:1.97
+      image: mailcow/watchdog:1.98
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       tmpfs:
@@ -556,6 +564,13 @@ services:
         - postfix-vol-1:/var/spool/postfix
         - ./data/assets/ssl:/etc/ssl/mail/:ro,z
       restart: always
+      depends_on:
+        - postfix-mailcow
+        - dovecot-mailcow
+        - mysql-mailcow
+        - acme-mailcow
+        - redis-mailcow
+
       environment:
         - IPV6_NETWORK=${IPV6_NETWORK:-fd4d:6169:6c63:6f77::/64}
         - LOG_LINES=${LOG_LINES:-9999}
