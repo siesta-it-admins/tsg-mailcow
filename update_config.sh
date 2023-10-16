@@ -341,25 +341,6 @@ BRANCH=$(cd ${SCRIPT_DIR}; git rev-parse --abbrev-ref HEAD)
 
 while (($#)); do
   case "${1}" in
-    --check|-c)
-      echo "Checking remote code for updates..."
-      LATEST_REV=$(git ls-remote --exit-code --refs --quiet https://github.com/siesta-it-admins/tsg-mailcow ${BRANCH} | cut -f1)
-      if [ $? -ne 0 ]; then
-        echo "A problem occurred while trying to fetch the latest revision from github."
-        exit 99
-      fi
-      if [[ -z $(git log HEAD --pretty=format:"%H" | grep "${LATEST_REV}") ]]; then
-        echo -e "Updated code is available.\nThe changes can be found here: https://github.com/siesta-it-admins/tsg-mailcow/commits/master"
-        git log --date=short --pretty=format:"%ad - %s" $(git rev-parse --short HEAD)..origin/master
-        exit 0
-      else
-        echo "No updates available."
-        exit 3
-      fi
-    ;;
-    --ours)
-      MERGE_STRATEGY=ours
-    ;;
     --skip-start)
       SKIP_START=y
     ;;
@@ -395,8 +376,6 @@ while (($#)); do
     --help|-h)
     echo './update.sh [-c|--check, --ours, --gc, --nightly, --prefetch, --skip-start, --skip-ping-check, --stable, -f|--force, -d|--dev, -h|--help]
 
-  -c|--check           -   Check for updates and exit (exit codes => 0: update available, 3: no updates)
-  --ours               -   Use merge strategy option "ours" to solve conflicts in favor of non-mailcow code (local changes over remote changes), not recommended!
   --gc                 -   Run garbage collector to delete old image tags
   --nightly            -   Switch your mailcow updates to the unstable (nightly) branch. FOR TESTING PURPOSES ONLY!!!!
   --prefetch           -   Only prefetch new images and exit (useful to prepare updates)
@@ -735,95 +714,6 @@ else
    fi
 fi
 
-if ! [ $NEW_BRANCH ]; then
-  echo -e "\e[33mDetecting which build your mailcow runs on...\e[0m"
-  sleep 1
-  if [ ${BRANCH} == "mailman3" ]; then
-    echo -e "\e[32mYou are receiving stable updates (mailman3).\e[0m"
-    echo -e "\e[33mTo change that run the update.sh Script one time with the --nightly parameter to switch to nightly builds.\e[0m"
-
-  elif [ ${BRANCH} == "nightly" ]; then
-    echo -e "\e[31mYou are receiving unstable updates (nightly). These are for testing purposes only!!!\e[0m"
-    sleep 1
-    echo -e "\e[33mTo change that run the update.sh Script one time with the --stable parameter to switch to stable builds.\e[0m"
-
-  else
-    echo -e "\e[33mYou are receiving updates from a unsupported branch.\e[0m"
-    sleep 1
-    echo -e "\e[33mThe mailcow stack might still work but it is recommended to switch to the mailman3 branch (stable builds).\e[0m"
-    echo -e "\e[33mTo change that run the update.sh Script one time with the --stable parameter to switch to stable builds.\e[0m"
-  fi
-elif [ $FORCE ]; then
-  echo -e "\e[31mYou are running in forced mode!\e[0m"
-  echo -e "\e[31mA Branch Switch can only be performed manually (monitored).\e[0m"
-  echo -e "\e[31mPlease rerun the update.sh Script without the --force/-f parameter.\e[0m"
-  sleep 1
-elif [ $NEW_BRANCH == "mailman3" ] && [ $CURRENT_BRANCH != "mailman3" ]; then
-  echo -e "\e[33mYou are about to switch your mailcow Updates to the stable (mailman3) branch.\e[0m"
-  sleep 1
-  echo -e "\e[33mBefore you do: Please take a backup of all components to ensure that no Data is lost...\e[0m"
-  sleep 1
-  echo -e "\e[31mWARNING: Please see on GitHub or ask in the communitys if a switch to mailman3 is stable or not.
-  In some rear cases a Update back to mailman3 can destroy your mailcow configuration in case of Database Upgrades etc.
-  Normally a upgrade back to mailman3 should be safe during each full release. 
-  Check GitHub for Database Changes and Update only if there similar to the full release!\e[0m"
-  read -r -p "Are you sure you that want to continue upgrading to the stable (mailman3) branch? [y/N] " response
-  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
-    echo "OK. If you prepared yourself for that please run the update.sh Script with the --stable parameter again to trigger this process here."
-    exit 0
-  fi
-  BRANCH=$NEW_BRANCH
-  DIFF_DIRECTORY=update_diffs
-  DIFF_FILE=${DIFF_DIRECTORY}/diff_before_upgrade_to_mailman3_$(date +"%Y-%m-%d-%H-%M-%S")
-  mv diff_before_upgrade* ${DIFF_DIRECTORY}/ 2> /dev/null
-  if ! git diff-index --quiet HEAD; then
-    echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
-    mkdir -p ${DIFF_DIRECTORY}
-    git diff ${BRANCH} --stat > ${DIFF_FILE}
-    git diff ${BRANCH} >> ${DIFF_FILE}
-  fi
-  echo -e "\e[32mSwitching Branch to ${BRANCH}...\e[0m"
-  git fetch origin
-  git checkout -f ${BRANCH}
-
-elif [ $NEW_BRANCH == "nightly" ] && [ $CURRENT_BRANCH != "nightly" ]; then
-  echo -e "\e[33mYou are about to switch your mailcow Updates to the unstable (nightly) branch.\e[0m"
-  sleep 1
-  echo -e "\e[33mBefore you do: Please take a backup of all components to ensure that no Data is lost...\e[0m"
-  sleep 1
-  echo -e "\e[31mWARNING: A switch to nightly is possible any time. But a switch back (to mailman3) isn't.\e[0m"
-  read -r -p "Are you sure you that want to continue upgrading to the unstable (nightly) branch? [y/N] " response
-  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
-    echo "OK. If you prepared yourself for that please run the update.sh Script with the --nightly parameter again to trigger this process here."
-    exit 0
-  fi
-  BRANCH=$NEW_BRANCH
-  DIFF_DIRECTORY=update_diffs
-  DIFF_FILE=${DIFF_DIRECTORY}/diff_before_upgrade_to_nightly_$(date +"%Y-%m-%d-%H-%M-%S")
-  mv diff_before_upgrade* ${DIFF_DIRECTORY}/ 2> /dev/null
-  if ! git diff-index --quiet HEAD; then
-    echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
-    mkdir -p ${DIFF_DIRECTORY}
-    git diff ${BRANCH} --stat > ${DIFF_FILE}
-    git diff ${BRANCH} >> ${DIFF_FILE}
-  fi
-  git fetch origin
-  git checkout -f ${BRANCH}
-fi
-
-if [ ! $DEV ]; then
-  echo -e "\e[32mChecking for newer update script...\e[0m"
-  SHA1_1=$(sha1sum update.sh)
-  git fetch origin #${BRANCH}
-  git checkout origin/${BRANCH} update.sh
-  SHA1_2=$(sha1sum update.sh)
-  if [[ ${SHA1_1} != ${SHA1_2} ]]; then
-    echo "update.sh changed, please run this script again, exiting."
-    chmod +x update.sh
-    exit 2
-  fi
-fi
-
 if [ ! $FORCE ]; then
   read -r -p "Are you sure you want to update mailcow: dockerized? All containers will be stopped. [y/N] " response
   if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
@@ -849,16 +739,6 @@ while read NAT_ID; do
   iptables -t nat -D POSTROUTING $NAT_ID
 done < <(iptables -L -vn -t nat --line-numbers | grep $IPV4_NETWORK | grep -E 'MASQUERADE.*all' | grep -v ${MAILCOW_BRIDGE} | cut -d' ' -f1)
 
-DIFF_DIRECTORY=update_diffs
-DIFF_FILE=${DIFF_DIRECTORY}/diff_before_update_$(date +"%Y-%m-%d-%H-%M-%S")
-mv diff_before_update* ${DIFF_DIRECTORY}/ 2> /dev/null
-if ! git diff-index --quiet HEAD; then
-  echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
-  mkdir -p ${DIFF_DIRECTORY}
-  git diff --stat > ${DIFF_FILE}
-  git diff >> ${DIFF_FILE}
-fi
-
 echo -e "\e[32mPrefetching images...\e[0m"
 prefetch_images
 
@@ -873,38 +753,6 @@ for container in "${MAILCOW_CONTAINERS[@]}"; do
 done
 
 [[ -f data/conf/nginx/ZZZ-ejabberd.conf ]] && rm data/conf/nginx/ZZZ-ejabberd.conf
-
-# Silently fixing remote url from andryyy to mailcow
-git remote set-url origin https://github.com/siesta-it-admins/tsg-mailcow
-echo -e "\e[32mCommitting current status...\e[0m"
-[[ -z "$(git config user.name)" ]] && git config user.name moo
-[[ -z "$(git config user.email)" ]] && git config user.email moo@cow.moo
-[[ ! -z $(git ls-files data/conf/rspamd/override.d/worker-controller-password.inc) ]] && git rm data/conf/rspamd/override.d/worker-controller-password.inc
-git add -u
-git commit -am "Before update on ${DATE}" > /dev/null
-echo -e "\e[32mFetching updated code from remote...\e[0m"
-git fetch origin #${BRANCH}
-echo -e "\e[32mMerging local with remote code (recursive, strategy: \"${MERGE_STRATEGY:-theirs}\", options: \"patience\"...\e[0m"
-git config merge.defaultToUpstream true
-git merge -X${MERGE_STRATEGY:-theirs} -Xpatience -m "After update on ${DATE}"
-# Need to use a variable to not pass return codes of if checks
-MERGE_RETURN=$?
-if [[ ${MERGE_RETURN} == 128 ]]; then
-  echo -e "\e[31m\nOh no, what happened?\n=> You most likely added files to your local mailcow instance that were now added to the official mailcow repository. Please move them to another location before updating mailcow.\e[0m"
-  exit 1
-elif [[ ${MERGE_RETURN} == 1 ]]; then
-  echo -e "\e[93mPotenial conflict, trying to fix...\e[0m"
-  git status --porcelain | grep -E "UD|DU" | awk '{print $2}' | xargs rm -v
-  git add -A
-  git commit -m "After update on ${DATE}" > /dev/null
-  git checkout .
-  echo -e "\e[32mRemoved and recreated files if necessary.\e[0m"
-elif [[ ${MERGE_RETURN} != 0 ]]; then
-  echo -e "\e[31m\nOh no, something went wrong. Please check the error message above.\e[0m"
-  echo
-  echo "Run $COMPOSE_COMMAND up -d to restart your stack without updates or try again after fixing the mentioned errors."
-  exit 1
-fi
 
 echo -e "\e[32mFetching new images, if any...\e[0m"
 sleep 2
