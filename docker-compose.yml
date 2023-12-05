@@ -158,7 +158,7 @@ services:
             - clamd
 
     rspamd-mailcow:
-      image: mailcow/rspamd:1.92
+      image: mailcow/rspamd:1.93
       stop_grace_period: 30s
       depends_on:
         - dovecot-mailcow
@@ -303,7 +303,7 @@ services:
             - sogo
 
     dovecot-mailcow:
-      image: mailcow/dovecot:1.25
+      image: mailcow/dovecot:1.26
       depends_on:
         - mysql-mailcow
       dns:
@@ -623,7 +623,7 @@ services:
             - watchdog
 
     dockerapi-mailcow:
-      image: mailcow/dockerapi:2.05
+      image: mailcow/dockerapi:2.06
       security_opt:
         - label=disable
       depends_on:
