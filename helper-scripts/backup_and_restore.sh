@@ -11,8 +11,8 @@ if [[ ! ${1} =~ (backup|restore) ]]; then
   exit 1
 fi
 
-if [[ ${1} == "backup" && ! ${2} =~ (crypt|vmail|redis|rspamd|postfix|mysql|all|--delete-days) ]]; then
-  echo "Second parameter needs to be 'vmail', 'crypt', 'redis', 'rspamd', 'postfix', 'mysql', 'all' or '--delete-days'"
+if [[ ${1} == "backup" && ! ${2} =~ (crypt|vmail|redis|rspamd|postfix|mc_mysql|mm_mysql|mm_core|all|--delete-days) ]]; then
+  echo "Second parameter needs to be 'vmail', 'crypt', 'redis', 'rspamd', 'postfix', 'mc_mysql', 'mm_mysql', 'mm_core', 'all' or '--delete-days'"
   exit 1
 fi
 
@@ -135,8 +135,8 @@ function backup() {
         -v $(docker volume ls -qf name=^${CMPS_PRJ}_postfix-vol-1$):/postfix:ro,z \
         ${DEBIAN_DOCKER_IMAGE} /bin/tar --warning='no-file-ignored' --use-compress-program="pigz --rsyncable -p ${THREADS}" -Pcvpf /backup/backup_postfix.tar.gz /postfix
       ;;&
-    mysql|all)
-      SQLIMAGE=$(grep -iEo '(mysql|mariadb)\:.+' ${COMPOSE_FILE})
+    mc_mysql|all)
+      SQLIMAGE=$(yq eval '.services.mysql-mailcow.image' < ${COMPOSE_FILE})
       if [[ -z "${SQLIMAGE}" ]]; then
         echo "Could not determine SQL image version, skipping backup..."
         shift
@@ -149,11 +149,37 @@ function backup() {
           -t --entrypoint= \
           --sysctl net.ipv6.conf.all.disable_ipv6=1 \
           -v ${BACKUP_LOCATION}/mailcow-${DATE}:/backup:z \
-          ${SQLIMAGE} /bin/sh -c "mariabackup --host mysql --user root --password ${DBROOT} --backup --rsync --target-dir=/backup_mariadb ; \
+          ${SQLIMAGE} /bin/sh -c "mariabackup --host mysql --user root --password ${MCDBROOT} --backup --rsync --target-dir=/backup_mariadb ; \
           mariabackup --prepare --target-dir=/backup_mariadb ; \
           chown -R 999:999 /backup_mariadb ; \
-          /bin/tar --warning='no-file-ignored' --use-compress-program='gzip --rsyncable' -Pcvpf /backup/backup_mariadb.tar.gz /backup_mariadb ;"
+          /bin/tar --warning='no-file-ignored' --use-compress-program='gzip --rsyncable' -Pcvpf /backup/backup_mc_mariadb.tar.gz /backup_mariadb ;"
       fi
+      ;;&
+    mm_mysql|all)
+      SQLIMAGE=$(yq eval '.services.database.image' < ${COMPOSE_FILE})
+      if [[ -z "${SQLIMAGE}" ]]; then
+        echo "Could not determine SQL image version, skipping backup..."
+        shift
+        continue
+      else
+        echo "Using SQL image ${SQLIMAGE}, starting..."
+        docker run --name mailcow-backup --rm \
+          --network $(docker network ls -qf name=^${CMPS_PRJ}_mailcow-network$) \
+          -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-database-vol-1$):/var/lib/mysql/:ro,z \
+          -t --entrypoint= \
+          --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+          -v ${BACKUP_LOCATION}/mailcow-${DATE}:/backup:z \
+          ${SQLIMAGE} /bin/sh -c "mariabackup --host database --user root --password ${MMDBROOT} --backup --rsync --target-dir=/backup_mariadb ; \
+          mariabackup --prepare --target-dir=/backup_mariadb ; \
+          chown -R 999:999 /backup_mariadb ; \
+          /bin/tar --warning='no-file-ignored' --use-compress-program='gzip --rsyncable' -Pcvpf /backup/backup_mm_mariadb.tar.gz /backup_mariadb ;"
+      fi
+      ;;&
+    mm_core|all)
+      docker run --name mailcow-backup --rm \
+        -v ${BACKUP_LOCATION}/mailcow-${DATE}:/backup:z \
+        -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-core-vol-1$):/mm_core:ro,z \
+        ${DEBIAN_DOCKER_IMAGE} /bin/tar --warning='no-file-ignored' --use-compress-program="pigz --rsyncable -p ${THREADS}" -Pcvpf /backup/backup_mm_core.tar.gz /mm_core
       ;;&
     --delete-days)
       shift
@@ -246,8 +272,8 @@ function restore() {
         ${DEBIAN_DOCKER_IMAGE} /bin/tar --use-compress-program="pigz -d -p ${THREADS}" -Pxvf /backup/backup_postfix.tar.gz
       docker start $(docker ps -aqf name=postfix-mailcow)
       ;;
-    mysql|mariadb)
-      SQLIMAGE=$(grep -iEo '(mysql|mariadb)\:.+' ${COMPOSE_FILE})
+    mc_mysql|mc_mariadb)
+      SQLIMAGE=$(yq eval '.services.mysql-mailcow.image' < ${COMPOSE_FILE})
       if [[ -z "${SQLIMAGE}" ]]; then
         echo "Could not determine SQL image version, skipping restore..."
         shift
@@ -274,7 +300,7 @@ function restore() {
           --entrypoint= \
           -v ${RESTORE_LOCATION}/mysql:/backup:z \
           ${SQLIMAGE} /bin/bash -c "shopt -s dotglob ; /bin/rm -rf /var/lib/mysql/* ; rsync -avh --usermap=root:mysql --groupmap=root:mysql /backup/ /var/lib/mysql/"
-        elif [[ -f "${RESTORE_LOCATION}/backup_mysql.gz" ]]; then
+        elif [[ -f "${RESTORE_LOCATION}/backup_mc_mysql.gz" ]]; then
         docker run \
           -it --name mailcow-backup --rm \
           -v $(docker volume ls -qf name=^${CMPS_PRJ}_mysql-vol-1$):/var/lib/mysql/:z \
@@ -284,7 +310,7 @@ function restore() {
           ${SQLIMAGE} /bin/sh -c "mysqld --skip-grant-tables & \
           until mysqladmin ping; do sleep 3; done && \
           echo Restoring... && \
-          gunzip < backup/backup_mysql.gz | mysql -uroot && \
+          gunzip < backup/backup_mc_mysql.gz | mysql -uroot && \
           mysql -uroot -e SHUTDOWN;"
         elif [[ -f "${RESTORE_LOCATION}/backup_mariadb.tar.gz" ]]; then
         docker run --name mailcow-backup --rm \
@@ -293,20 +319,90 @@ function restore() {
           -v ${RESTORE_LOCATION}:/backup:z \
           ${SQLIMAGE} /bin/bash -c "shopt -s dotglob ; \
             /bin/rm -rf /backup_mariadb/* ; \
-            /bin/tar -Pxvzf /backup/backup_mariadb.tar.gz"
+            /bin/tar -Pxvzf /backup/backup_mc_mariadb.tar.gz"
         fi
         echo "Modifying mailcow.conf..."
         source ${RESTORE_LOCATION}/mailcow.conf
-        sed -i --follow-symlinks "/DBNAME/c\DBNAME=${DBNAME}" ${SCRIPT_DIR}/../mailcow.conf
-        sed -i --follow-symlinks "/DBUSER/c\DBUSER=${DBUSER}" ${SCRIPT_DIR}/../mailcow.conf
-        sed -i --follow-symlinks "/DBPASS/c\DBPASS=${DBPASS}" ${SCRIPT_DIR}/../mailcow.conf
-        sed -i --follow-symlinks "/DBROOT/c\DBROOT=${DBROOT}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MCDBNAME/c\MCDBNAME=${MCDBNAME}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MCDBUSER/c\MCDBUSER=${MCDBUSER}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MCDBPASS/c\MCDBPASS=${MCDBPASS}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MCDBROOT/c\MCDBROOT=${MCDBROOT}" ${SCRIPT_DIR}/../mailcow.conf
         source ${SCRIPT_DIR}/../mailcow.conf
         echo "Starting mailcow..."
         ${COMPOSE_COMMAND} -f ${COMPOSE_FILE} --env-file ${ENV_FILE} up -d
         #docker start $(docker ps -aqf name=mysql-mailcow)
       fi
       ;;
+ 
+    mm_mysql|mm_mariadb)
+      SQLIMAGE=$(yq eval '.services.database.image' < ${COMPOSE_FILE})
+      if [[ -z "${SQLIMAGE}" ]]; then
+        echo "Could not determine SQL image version, skipping restore..."
+        shift
+        continue
+      elif [ ! -f "${RESTORE_LOCATION}/mailcow.conf" ]; then
+        echo "Could not find the corresponding mailcow.conf in ${RESTORE_LOCATION}, skipping restore."
+        echo "If you lost that file, copy the last working mailcow.conf file to ${RESTORE_LOCATION} and restart the restore process."
+        shift
+        continue
+      else
+        read -p "mailcow will be stopped and the currently active mailcow.conf will be modified to use the DB parameters found in ${RESTORE_LOCATION}/mailcow.conf - do you want to proceed? [Y|n] " MYSQL_STOP_MAILCOW
+        if [[ ${MYSQL_STOP_MAILCOW,,} =~ ^(no|n|N)$ ]]; then
+          echo "OK, skipped."
+          shift
+          continue
+        else
+          echo "Stopping mailcow..."
+          ${COMPOSE_COMMAND} -f ${COMPOSE_FILE} --env-file ${ENV_FILE} down
+        fi
+        #docker stop $(docker ps -qf name=mysql-mailcow)
+        if [[ -d "${RESTORE_LOCATION}/mysql" ]]; then
+        docker run --name mailcow-backup --rm \
+          -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-database-vol-1$):/var/lib/mysql/:rw,z \
+          --entrypoint= \
+          -v ${RESTORE_LOCATION}/mysql:/backup:z \
+          ${SQLIMAGE} /bin/bash -c "shopt -s dotglob ; /bin/rm -rf /var/lib/mysql/* ; rsync -avh --usermap=root:mysql --groupmap=root:mysql /backup/ /var/lib/mysql/"
+        elif [[ -f "${RESTORE_LOCATION}/backup_mm_mysql.gz" ]]; then
+        docker run \
+          -it --name mailcow-backup --rm \
+          -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-database-vol-1$):/var/lib/mysql/:z \
+          --entrypoint= \
+          -u mysql \
+          -v ${RESTORE_LOCATION}:/backup:z \
+          ${SQLIMAGE} /bin/sh -c "mysqld --skip-grant-tables & \
+          until mysqladmin ping; do sleep 3; done && \
+          echo Restoring... && \
+          gunzip < backup/backup_mm_mysql.gz | mysql -uroot && \
+          mysql -uroot -e SHUTDOWN;"
+        elif [[ -f "${RESTORE_LOCATION}/backup_mariadb.tar.gz" ]]; then
+        docker run --name mailcow-backup --rm \
+          -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-database-vol-1$):/backup_mariadb/:rw,z \
+          --entrypoint= \
+          -v ${RESTORE_LOCATION}:/backup:z \
+          ${SQLIMAGE} /bin/bash -c "shopt -s dotglob ; \
+            /bin/rm -rf /backup_mariadb/* ; \
+            /bin/tar -Pxvzf /backup/backup_mm_mariadb.tar.gz"
+        fi        
+        echo "Modifying mailcow.conf..."
+        source ${RESTORE_LOCATION}/mailcow.conf
+        sed -i --follow-symlinks "/MMDBNAME/c\MMDBNAME=${MMDBNAME}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MMDBUSER/c\MMDBUSER=${MMDBUSER}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MMDBPASS/c\MMDBPASS=${MMDBPASS}" ${SCRIPT_DIR}/../mailcow.conf
+        sed -i --follow-symlinks "/MMDBROOT/c\MMDBROOT=${MMDBROOT}" ${SCRIPT_DIR}/../mailcow.conf
+        source ${SCRIPT_DIR}/../mailcow.conf
+        echo "Starting mailcow..."
+        ${COMPOSE_COMMAND} -f ${COMPOSE_FILE} --env-file ${ENV_FILE} up -d
+        #docker start $(docker ps -aqf name=mysql-mailcow)
+      fi
+      ;;
+    mm_core)
+      docker stop $(docker ps -qf name=mailman-core)
+      docker run -it --name mailcow-backup --rm \
+        -v ${RESTORE_LOCATION}:/backup:z \
+        -v $(docker volume ls -qf name=^${CMPS_PRJ}_mailman-core-vol-1$):/mm_core:z \
+        ${DEBIAN_DOCKER_IMAGE} /bin/tar --use-compress-program="pigz -d -p ${THREADS}" -Pxvf /backup/backup_mm_core.tar.gz
+      docker start $(docker ps -aqf name=mailman-core)
+      ;;      
     esac
     shift
   done
@@ -338,7 +434,7 @@ elif [[ ${1} == "restore" ]]; then
   echo
   declare -A FILE_SELECTION
   RESTORE_POINT="${FOLDER_SELECTION[${input_sel}]}"
-  if [[ -z $(find "${FOLDER_SELECTION[${input_sel}]}" -maxdepth 1 \( -type d -o -type f \) -regex ".*\(redis\|rspamd\|mariadb\|mysql\|crypt\|vmail\|postfix\).*") ]]; then
+  if [[ -z $(find "${FOLDER_SELECTION[${input_sel}]}" -maxdepth 1 \( -type d -o -type f \) -regex ".*\(redis\|rspamd\|mm_mariadb\|mm_mysql\mc_mariadb\|mc_mysql\|mm_core\|crypt\|vmail\|postfix\).*") ]]; then
     echo "No datasets found"
     exit 1
   fi
@@ -367,9 +463,17 @@ elif [[ ${1} == "restore" ]]; then
       echo "[ ${i} ] - Postfix data"
       FILE_SELECTION[${i}]="postfix"
       ((i++))
-    elif [[ ${file} =~ mysql ]] || [[ ${file} =~ mariadb ]]; then
-      echo "[ ${i} ] - SQL DB"
-      FILE_SELECTION[${i}]="mysql"
+    elif [[ ${file} =~ mc_mysql ]] || [[ ${file} =~ mc_mariadb ]]; then
+      echo "[ ${i} ] - mailcow SQL DB"
+      FILE_SELECTION[${i}]="mc_mysql"
+      ((i++))
+    elif [[ ${file} =~ mm_mysql ]] || [[ ${file} =~ mm_mariadb ]]; then
+      echo "[ ${i} ] - mailman SQL DB"
+      FILE_SELECTION[${i}]="mm_mysql"
+      ((i++))
+    elif [[ ${file} =~ mm_core ]]; then
+      echo "[ ${i} ] - mailman data"
+      FILE_SELECTION[${i}]="mm_core"
       ((i++))
     fi
   done
