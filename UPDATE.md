@@ -47,12 +47,19 @@ Then push them.
 git push
 ```
 
-## Deployment
+## Deployment on production
 
-On the deployment machine, you need to fetch the changes from tsg-mailcow.git, then integrate into the running copy.
+On the productuion machine, you need to fetch the changes from tsg-mailcow.git, then integrate into the running copy.
 
 ### Backup
 
-### Update local repo
+### Update
 ```
-cd /opt/
+cd /opt/tsg-mailcow
+systemctl stop docker-compose-mailcow
+git pull
+git merge origin/mailman3
+docker-compose pull
+systemctl start docker-compose-mailcow
+
+
