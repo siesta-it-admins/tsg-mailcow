@@ -41,7 +41,7 @@ git push --set-upstream origin --tags
 git checkout mailman3
 git merge upstream/master
 ```
-Potentially merge conflicts arise at this point. Solve them wise and commit them.
+Potentially, merge conflicts arise at this point. Solve them wise and commit them. `git gui` will be your friend.
 Then push them.
 ```
 git push
@@ -51,15 +51,33 @@ git push
 
 On the productuion machine, you need to fetch the changes from tsg-mailcow.git, then integrate into the running copy.
 
+First, become root.
+
 ### Backup
+```
+cd /opt
+systemctl stop docker-compose-mailcow
+tar cvzf mailcow-mailman3-dockerized-volumes.tgz /var/lib/docker/volumes/mailcow*
+tar cvzf tsg-mailcow.tgz tsg-mailcow/
+```
 
 ### Update
 ```
 cd /opt/tsg-mailcow
-systemctl stop docker-compose-mailcow
 git pull
 git merge origin/mailman3
 docker-compose pull
+./update_config.sh
+```
+
+As update_config.sh will start the stack, but systemd thinks it is stopped, we need to get it back under the control of systemd:
+
+```
+docker-compose down
 systemctl start docker-compose-mailcow
+```
+
+### Clean up
+Once you have verified that everything works, you can prune the backups.
 
 
