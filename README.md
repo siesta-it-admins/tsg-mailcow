@@ -10,6 +10,10 @@ So tsg-mailcow utilizes the following approach to overcome this:
 - the mailman3 branch shall take all changes needed for running mailman.
 
 
+# Dependencies
+yq: install with ```sudo snap install yq```
+
+
 # Links
 
 [mailcow-dockerized](https://github.com/mailcow/mailcow-dockerized)
