@@ -2,6 +2,8 @@
 
 ############## Begin Function Section ##############
 
+set -x
+
 check_online_status() {
   CHECK_ONLINE_DOMAINS=('https://github.com' 'https://hub.docker.com')
   for domain in "${CHECK_ONLINE_DOMAINS[@]}"; do
