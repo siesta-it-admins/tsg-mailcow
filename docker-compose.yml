@@ -95,9 +95,8 @@ services:
       depends_on:
         - unbound-mailcow
         - netfilter-mailcow
-      stop_grace_period: 45s
-      depends_on:
         - mailman-web
+      stop_grace_period: 45s
       volumes:
         - mysql-vol-1:/var/lib/mysql/
         - mysql-socket-vol-1:/var/run/mysqld/
@@ -120,12 +119,11 @@ services:
 
     redis-mailcow:
       image: redis:7-alpine
-      depends_on:
-        - mailman-web
       volumes:
         - redis-vol-1:/data/
       restart: always
       depends_on:
+        - mailman-web
         - netfilter-mailcow
       ports:
         - "${REDIS_PORT:-127.0.0.1:7654}:6379"
@@ -141,10 +139,10 @@ services:
 
     clamd-mailcow:
       image: mailcow/clamd:1.65
-      depends_on:
-        - mailman-web
       restart: always
       depends_on:
+        mailman-web:
+          condition: service_started
         unbound-mailcow:
           condition: service_healthy
       dns:
@@ -536,13 +534,6 @@ services:
     netfilter-mailcow:
       image: mailcow/netfilter:1.58
       stop_grace_period: 30s
-      depends_on:
-        - mailman-web
-        - dovecot-mailcow
-        - postfix-mailcow
-        - sogo-mailcow
-        - php-fpm-mailcow
-        - redis-mailcow
       restart: always
       privileged: true
       environment:
@@ -560,8 +551,6 @@ services:
         - /lib/modules:/lib/modules:ro
 
     watchdog-mailcow:
-      depends_on:
-        - mailman-web
       image: mailcow/watchdog:2.02
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
@@ -574,6 +563,7 @@ services:
         - ./data/assets/ssl:/etc/ssl/mail/:ro,z
       restart: always
       depends_on:
+        - mailman-web
         - postfix-mailcow
         - dovecot-mailcow
         - mysql-mailcow
@@ -660,10 +650,9 @@ services:
     ##### Will be removed soon #####
     solr-mailcow:
       image: mailcow/solr:1.8.2
-      depends_on:
-        - mailman-web
       restart: always
       depends_on:
+        - mailman-web
         - netfilter-mailcow
       volumes:
         - solr-vol-1:/opt/solr/server/solr/dovecot-fts/data
