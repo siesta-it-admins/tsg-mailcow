@@ -140,7 +140,7 @@ services:
             - redis
 
     clamd-mailcow:
-      image: mailcow/clamd:1.64
+      image: mailcow/clamd:1.65
       depends_on:
         - mailman-web
       restart: always
@@ -534,7 +534,7 @@ services:
             - acme
 
     netfilter-mailcow:
-      image: mailcow/netfilter:1.57
+      image: mailcow/netfilter:1.58
       stop_grace_period: 30s
       depends_on:
         - mailman-web
