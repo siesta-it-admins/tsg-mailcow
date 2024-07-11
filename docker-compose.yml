@@ -1,4 +1,3 @@
-version: '2.1'
 services:
 
     mailman-core:
@@ -75,7 +74,7 @@ services:
             - database
 
     unbound-mailcow:
-      image: mailcow/unbound:1.21
+      image: mailcow/unbound:1.22
       environment:
         - TZ=${TZ}
         - SKIP_UNBOUND_HEALTHCHECK=${SKIP_UNBOUND_HEALTHCHECK:-n}
@@ -138,7 +137,7 @@ services:
             - redis
 
     clamd-mailcow:
-      image: mailcow/clamd:1.65
+      image: mailcow/clamd:1.66
       restart: always
       depends_on:
         mailman-web:
@@ -160,7 +159,7 @@ services:
             - clamd
 
     rspamd-mailcow:
-      image: mailcow/rspamd:1.95
+      image: mailcow/rspamd:1.96
       stop_grace_period: 30s
       depends_on:
         - dovecot-mailcow
@@ -191,7 +190,7 @@ services:
             - rspamd
 
     php-fpm-mailcow:
-      image: mailcow/phpfpm:1.87
+      image: mailcow/phpfpm:1.88
       command: "php-fpm -d date.timezone=${TZ} -d expose_php=0"
       depends_on:
         - redis-mailcow
@@ -305,7 +304,7 @@ services:
             - sogo
 
     dovecot-mailcow:
-      image: mailcow/dovecot:1.28.2
+      image: mailcow/dovecot:1.30
       depends_on:
         - mysql-mailcow
         - netfilter-mailcow
@@ -348,6 +347,7 @@ services:
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
         - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-mailcow-dockerized}
+        - FLATCURVE_EXPERIMENTAL=${FLATCURVE_EXPERIMENTAL:-n}
       ports:
         - "${DOVEADM_PORT:-127.0.0.1:19991}:12345"
         - "${IMAP_PORT:-143}:143"
@@ -373,7 +373,7 @@ services:
         ofelia.job-exec.dovecot_sarules.schedule: "@every 24h"
         ofelia.job-exec.dovecot_sarules.command: "/bin/bash -c \"/usr/local/bin/sa-rules.sh\""
         ofelia.job-exec.dovecot_fts.schedule: "@every 24h"
-        ofelia.job-exec.dovecot_fts.command: "/usr/bin/curl http://solr:8983/solr/dovecot-fts/update?optimize=true"
+        ofelia.job-exec.dovecot_fts.command: "/bin/bash -c \"/usr/local/bin/gosu vmail /usr/local/bin/optimize-fts.sh\""
         ofelia.job-exec.dovecot_repl_health.schedule: "@every 5m"
         ofelia.job-exec.dovecot_repl_health.command: "/bin/bash -c \"/usr/local/bin/gosu vmail /usr/local/bin/repl_health.sh\""
       ulimits:
@@ -388,7 +388,7 @@ services:
             - dovecot
 
     postfix-mailcow:
-      image: mailcow/postfix:1.74
+      image: mailcow/postfix:1.75
       depends_on:
         mysql-mailcow:
           condition: service_started
@@ -495,13 +495,14 @@ services:
           condition: service_started
         unbound-mailcow:
           condition: service_healthy
-      image: mailcow/acme:1.87
+      image: mailcow/acme:1.88
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       environment:
         - LOG_LINES=${LOG_LINES:-9999}
         - ACME_CONTACT=${ACME_CONTACT:-}
         - ADDITIONAL_SAN=${ADDITIONAL_SAN}
+        - AUTODISCOVER_SAN=${AUTODISCOVER_SAN:-y}
         - MAILCOW_HOSTNAME=${MAILCOW_HOSTNAME}
         - DBNAME=${MCDBNAME}
         - DBUSER=${MCDBUSER}
@@ -532,7 +533,7 @@ services:
             - acme
 
     netfilter-mailcow:
-      image: mailcow/netfilter:1.58
+      image: mailcow/netfilter:1.59
       stop_grace_period: 30s
       restart: always
       privileged: true
@@ -551,7 +552,7 @@ services:
         - /lib/modules:/lib/modules:ro
 
     watchdog-mailcow:
-      image: mailcow/watchdog:2.02
+      image: mailcow/watchdog:2.03
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       tmpfs:
@@ -625,7 +626,7 @@ services:
             - watchdog
 
     dockerapi-mailcow:
-      image: mailcow/dockerapi:2.07
+      image: mailcow/dockerapi:2.08
       security_opt:
         - label=disable
       depends_on:
@@ -649,7 +650,7 @@ services:
     
     ##### Will be removed soon #####
     solr-mailcow:
-      image: mailcow/solr:1.8.2
+      image: mailcow/solr:1.8.3
       restart: always
       depends_on:
         - mailman-web
@@ -662,6 +663,7 @@ services:
         - TZ=${TZ}
         - SOLR_HEAP=${SOLR_HEAP:-1024}
         - SKIP_SOLR=${SKIP_SOLR:-y}
+        - FLATCURVE_EXPERIMENTAL=${FLATCURVE_EXPERIMENTAL:-n}
       networks:
         mailcow-network:
           ipv4_address: ${IPV4_NETWORK:-172.19.199}.109
@@ -670,7 +672,7 @@ services:
     ################################
 
     olefy-mailcow:
-      image: mailcow/olefy:1.12
+      image: mailcow/olefy:1.13
       depends_on:
         - mailman-web
       restart: always
