@@ -1174,7 +1174,7 @@ function user_get_alias_details($username) {
     AND `goto` != :username_goto2
     AND `address` != :username_address");
   $stmt->execute(array(
-    ':username_goto' => '(^|,)'.$username.'($|,)',
+    ':username_goto' => '(^|,)'.preg_quote($username, '/').'($|,)',
     ':username_goto2' => $username,
     ':username_address' => $username
     ));
@@ -1222,7 +1222,7 @@ function user_get_alias_details($username) {
     $data['aliases_send_as_all'] = $row['send_as'];
   }
   $stmt = $pdo->prepare("SELECT IFNULL(GROUP_CONCAT(`address` SEPARATOR ', '), '') as `address` FROM `alias` WHERE `goto` REGEXP :username AND `address` LIKE '@%';");
-  $stmt->execute(array(':username' => '(^|,)'.$username.'($|,)'));
+  $stmt->execute(array(':username' => '(^|,)'.preg_quote($username, '/').'($|,)'));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
     $data['is_catch_all'] = $row['address'];
@@ -2275,9 +2275,25 @@ function cors($action, $data = null) {
     break;
   }
 }
-function getBaseURL() {
-  $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-  $host = $_SERVER['HTTP_HOST'];
+function getBaseURL($protocol = null) {
+  // Get current server name
+  $host = strtolower($_SERVER['SERVER_NAME']);
+
+  // craft allowed server name list
+  $mailcow_hostname = strtolower(getenv("MAILCOW_HOSTNAME"));
+  $additional_server_names = strtolower(getenv("ADDITIONAL_SERVER_NAMES")) ?: "";
+  $additional_server_names = preg_replace('/\s+/', '', $additional_server_names);
+  $allowed_server_names = $additional_server_names !== "" ? explode(',', $additional_server_names) : array();
+  array_push($allowed_server_names, $mailcow_hostname);
+
+  // Fallback to MAILCOW HOSTNAME if current server name is not in allowed list
+  if (!in_array($host, $allowed_server_names)) {
+    $host = $mailcow_hostname;
+  }
+
+  if (!isset($protocol)) {
+    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+  }
   $base_url = $protocol . '://' . $host;
 
   return $base_url;
@@ -2907,50 +2923,6 @@ function getGUID() {
         .substr($charid,12, 4).$hyphen
         .substr($charid,16, 4).$hyphen
         .substr($charid,20,12);
-}
-function solr_status() {
-  $curl = curl_init();
-  $endpoint = 'http://solr:8983/solr/admin/cores';
-  $params = array(
-    'action' => 'STATUS',
-    'core' => 'dovecot-fts',
-    'indexInfo' => 'true'
-  );
-  $url = $endpoint . '?' . http_build_query($params);
-  curl_setopt($curl, CURLOPT_URL, $url);
-  curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
-  curl_setopt($curl, CURLOPT_POST, 0);
-  curl_setopt($curl, CURLOPT_TIMEOUT, 10);
-  $response_core = curl_exec($curl);
-  if ($response_core === false) {
-    $err = curl_error($curl);
-    curl_close($curl);
-    return false;
-  }
-  else {
-    curl_close($curl);
-    $curl = curl_init();
-    $status_core = json_decode($response_core, true);
-    $url = 'http://solr:8983/solr/admin/info/system';
-    curl_setopt($curl, CURLOPT_URL, $url);
-    curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($curl, CURLOPT_POST, 0);
-    curl_setopt($curl, CURLOPT_TIMEOUT, 10);
-    $response_sysinfo = curl_exec($curl);
-    if ($response_sysinfo === false) {
-      $err = curl_error($curl);
-      curl_close($curl);
-      return false;
-    }
-    else {
-      curl_close($curl);
-      $status_sysinfo = json_decode($response_sysinfo, true);
-      $status = array_merge($status_core, $status_sysinfo);
-      return (!empty($status['status']['dovecot-fts']) && !empty($status['jvm']['memory'])) ? $status : false;
-    }
-    return (!empty($status['status']['dovecot-fts'])) ? $status['status']['dovecot-fts'] : false;
-  }
-  return false;
 }
 
 function cleanupJS($ignore = '', $folder = '/tmp/*.js') {

@@ -74,7 +74,7 @@ services:
             - database
 
     unbound-mailcow:
-      image: mailcow/unbound:1.23
+      image: ghcr.io/mailcow/unbound:1.23
       environment:
         - TZ=${TZ}
         - SKIP_UNBOUND_HEALTHCHECK=${SKIP_UNBOUND_HEALTHCHECK:-n}
@@ -90,7 +90,7 @@ services:
             - unbound
 
     mysql-mailcow:
-      image: mariadb:10.5
+      image: mariadb:10.11
       depends_on:
         - unbound-mailcow
         - netfilter-mailcow
@@ -117,9 +117,11 @@ services:
             - mysql
 
     redis-mailcow:
-      image: redis:7-alpine
+      image: redis:7.4.2-alpine
+      entrypoint: ["/bin/sh","/redis-conf.sh"]
       volumes:
         - redis-vol-1:/data/
+        - ./data/conf/redis/redis-conf.sh:/redis-conf.sh:z
       restart: always
       depends_on:
         - mailman-web
@@ -128,6 +130,8 @@ services:
         - "${REDIS_PORT:-127.0.0.1:7654}:6379"
       environment:
         - TZ=${TZ}
+        - REDISPASS=${REDISPASS}
+        - REDISMASTERPASS=${REDISMASTERPASS:-}
       sysctls:
         - net.core.somaxconn=4096
       networks:
@@ -137,7 +141,7 @@ services:
             - redis
 
     clamd-mailcow:
-      image: mailcow/clamd:1.66
+      image: ghcr.io/mailcow/clamd:1.70
       restart: always
       depends_on:
         mailman-web:
@@ -159,7 +163,7 @@ services:
             - clamd
 
     rspamd-mailcow:
-      image: mailcow/rspamd:1.98
+      image: ghcr.io/mailcow/rspamd:2.0
       stop_grace_period: 30s
       depends_on:
         - dovecot-mailcow
@@ -170,6 +174,7 @@ services:
         - IPV6_NETWORK=${IPV6_NETWORK:-fd4d:6169:6c63:6f77::/64}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - SPAMHAUS_DQS_KEY=${SPAMHAUS_DQS_KEY:-}
       volumes:
         - ./data/hooks/rspamd:/hooks:Z
@@ -192,7 +197,7 @@ services:
             - rspamd
 
     php-fpm-mailcow:
-      image: mailcow/phpfpm:1.91.1
+      image: ghcr.io/mailcow/phpfpm:1.92
       command: "php-fpm -d date.timezone=${TZ} -d expose_php=0"
       depends_on:
         - redis-mailcow
@@ -219,6 +224,7 @@ services:
       environment:
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - LOG_LINES=${LOG_LINES:-9999}
         - TZ=${TZ}
         - DBNAME=${MCDBNAME}
@@ -240,7 +246,7 @@ services:
         - API_KEY_READ_ONLY=${API_KEY_READ_ONLY:-invalid}
         - API_ALLOW_FROM=${API_ALLOW_FROM:-invalid}
         - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-mailcow-dockerized}
-        - SKIP_SOLR=${SKIP_SOLR:-y}
+        - SKIP_FTS=${SKIP_FTS:-y}
         - SKIP_CLAMD=${SKIP_CLAMD:-n}
         - SKIP_SOGO=${SKIP_SOGO:-n}
         - ALLOW_ADMIN_EMAIL_LOGIN=${ALLOW_ADMIN_EMAIL_LOGIN:-n}
@@ -249,7 +255,7 @@ services:
         - DEMO_MODE=${DEMO_MODE:-n}
         - WEBAUTHN_ONLY_TRUSTED_VENDORS=${WEBAUTHN_ONLY_TRUSTED_VENDORS:-n}
         - CLUSTERMODE=${CLUSTERMODE:-}
-        - FLATCURVE_EXPERIMENTAL=${FLATCURVE_EXPERIMENTAL:-}
+        - ADDITIONAL_SERVER_NAMES=${ADDITIONAL_SERVER_NAMES:-}
       restart: always
       networks:
         mailcow-network:
@@ -258,7 +264,7 @@ services:
             - phpfpm
 
     sogo-mailcow:
-      image: mailcow/sogo:1.127.1
+      image: mailcow/sogo:1.129
       depends_on:
         - mailman-web
       environment:
@@ -277,6 +283,7 @@ services:
         - MASTER=${MASTER:-y}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       volumes:
@@ -284,6 +291,9 @@ services:
         - ./data/conf/sogo/:/etc/sogo/:z
         - ./data/web/inc/init_db.inc.php:/init_db.inc.php:z
         - ./data/conf/sogo/custom-favicon.ico:/usr/lib/GNUstep/SOGo/WebServerResources/img/sogo.ico:z
+        - ./data/conf/sogo/custom-shortlogo.svg:/usr/lib/GNUstep/SOGo/WebServerResources/img/sogo-compact.svg:z
+        - ./data/conf/sogo/custom-fulllogo.svg:/usr/lib/GNUstep/SOGo/WebServerResources/img/sogo-full.svg:z
+        - ./data/conf/sogo/custom-fulllogo.png:/usr/lib/GNUstep/SOGo/WebServerResources/img/sogo-logo.png:z
         - ./data/conf/sogo/custom-theme.js:/usr/lib/GNUstep/SOGo/WebServerResources/js/theme.js:z
         - ./data/conf/sogo/custom-sogo.js:/usr/lib/GNUstep/SOGo/WebServerResources/js/custom-sogo.js:z
         - mysql-socket-vol-1:/var/run/mysqld/
@@ -307,10 +317,11 @@ services:
             - sogo
 
     dovecot-mailcow:
-      image: mailcow/dovecot:2.2
+      image: ghcr.io/mailcow/dovecot:2.31
       depends_on:
         - mysql-mailcow
         - netfilter-mailcow
+        - redis-mailcow
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       cap_add:
@@ -344,13 +355,15 @@ services:
         - ALLOW_ADMIN_EMAIL_LOGIN=${ALLOW_ADMIN_EMAIL_LOGIN:-n}
         - MAILDIR_GC_TIME=${MAILDIR_GC_TIME:-7200}
         - ACL_ANYONE=${ACL_ANYONE:-disallow}
-        - SKIP_SOLR=${SKIP_SOLR:-y}
+        - SKIP_FTS=${SKIP_FTS:-y}
+        - FTS_HEAP=${FTS_HEAP:-512}
+        - FTS_PROCS=${FTS_PROCS:-3}
         - MAILDIR_SUB=${MAILDIR_SUB:-}
         - MASTER=${MASTER:-y}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-mailcow-dockerized}
-        - FLATCURVE_EXPERIMENTAL=${FLATCURVE_EXPERIMENTAL:-n}
       ports:
         - "${DOVEADM_PORT:-127.0.0.1:19991}:12345"
         - "${IMAP_PORT:-143}:143"
@@ -391,7 +404,7 @@ services:
             - dovecot
 
     postfix-mailcow:
-      image: mailcow/postfix:1.77
+      image: ghcr.io/mailcow/postfix:1.80
       depends_on:
         mysql-mailcow:
           condition: service_started
@@ -416,6 +429,7 @@ services:
         - DBPASS=${MCDBPASS}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - MAILCOW_HOSTNAME=${MAILCOW_HOSTNAME}
         - SPAMHAUS_DQS_KEY=${SPAMHAUS_DQS_KEY:-}
       cap_add:
@@ -448,10 +462,11 @@ services:
 
     nginx-mailcow:
       depends_on:
-        - sogo-mailcow
-        - php-fpm-mailcow
         - redis-mailcow
-      image: nginx:mainline-alpine
+        - php-fpm-mailcow
+        - sogo-mailcow
+        - rspamd-mailcow
+      image: ghcr.io/mailcow/nginx:1.03
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       command: /bin/sh -c "envsubst < /etc/nginx/conf.d/templates/listen_plain.template > /etc/nginx/conf.d/listen_plain.active &&
@@ -471,10 +486,19 @@ services:
         - HTTP_PORT=${HTTP_PORT:-80}
         - MAILCOW_HOSTNAME=${MAILCOW_HOSTNAME}
         - IPV4_NETWORK=${IPV4_NETWORK:-172.19.199}
+        - ADDITIONAL_SERVER_NAMES=${ADDITIONAL_SERVER_NAMES:-}
         - TZ=${TZ}
         - SKIP_SOGO=${SKIP_SOGO:-n}
-        - ALLOW_ADMIN_EMAIL_LOGIN=${ALLOW_ADMIN_EMAIL_LOGIN:-n}
-        - ADDITIONAL_SERVER_NAMES=${ADDITIONAL_SERVER_NAMES:-}
+        - SKIP_RSPAMD=${SKIP_RSPAMD:-n}
+        - DISABLE_IPv6=${DISABLE_IPv6:-n}
+        - HTTP_REDIRECT=${HTTP_REDIRECT:-n}
+        - PHPFPMHOST=${PHPFPMHOST:-}
+        - SOGOHOST=${SOGOHOST:-}
+        - RSPAMDHOST=${RSPAMDHOST:-}
+        - REDISHOST=${REDISHOST:-}
+        - IPV4_NETWORK=${IPV4_NETWORK:-172.22.1}
+        - NGINX_USE_PROXY_PROTOCOL=${NGINX_USE_PROXY_PROTOCOL:-n}
+        - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       volumes:
         - ./data/web:/web:ro,z
         - ./data/conf/rspamd/dynmaps:/dynmaps:ro,z
@@ -498,7 +522,7 @@ services:
           condition: service_started
         unbound-mailcow:
           condition: service_healthy
-      image: mailcow/acme:1.90
+      image: ghcr.io/mailcow/acme:1.91
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       environment:
@@ -521,6 +545,7 @@ services:
         - TZ=${TZ}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - SNAT_TO_SOURCE=${SNAT_TO_SOURCE:-n}
         - SNAT6_TO_SOURCE=${SNAT6_TO_SOURCE:-n}
       volumes:
@@ -536,7 +561,7 @@ services:
             - acme
 
     netfilter-mailcow:
-      image: mailcow/netfilter:1.59
+      image: ghcr.io/mailcow/netfilter:1.61
       stop_grace_period: 30s
       restart: always
       privileged: true
@@ -548,6 +573,7 @@ services:
         - SNAT6_TO_SOURCE=${SNAT6_TO_SOURCE:-n}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - MAILCOW_REPLICA_IP=${MAILCOW_REPLICA_IP:-}
         - DISABLE_NETFILTER_ISOLATION_RULE=${DISABLE_NETFILTER_ISOLATION_RULE:-n}
       network_mode: "host"
@@ -555,7 +581,7 @@ services:
         - /lib/modules:/lib/modules:ro
 
     watchdog-mailcow:
-      image: mailcow/watchdog:2.05
+      image: ghcr.io/mailcow/watchdog:2.06
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       tmpfs:
@@ -602,6 +628,7 @@ services:
         - HTTPS_PORT=${HTTPS_PORT:-443}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
         - EXTERNAL_CHECKS_THRESHOLD=${EXTERNAL_CHECKS_THRESHOLD:-1}
         - NGINX_THRESHOLD=${NGINX_THRESHOLD:-5}
         - UNBOUND_THRESHOLD=${UNBOUND_THRESHOLD:-5}
@@ -628,7 +655,7 @@ services:
             - watchdog
 
     dockerapi-mailcow:
-      image: mailcow/dockerapi:2.09
+      image: ghcr.io/mailcow/dockerapi:2.10
       security_opt:
         - label=disable
       depends_on:
@@ -641,6 +668,7 @@ services:
         - TZ=${TZ}
         - REDIS_SLAVEOF_IP=${REDIS_SLAVEOF_IP:-}
         - REDIS_SLAVEOF_PORT=${REDIS_SLAVEOF_PORT:-}
+        - REDISPASS=${REDISPASS}
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock:ro
       networks:
@@ -674,7 +702,7 @@ services:
     ################################
 
     olefy-mailcow:
-      image: mailcow/olefy:1.13
+      image: ghcr.io/mailcow/olefy:1.13
       depends_on:
         - mailman-web
       restart: always
@@ -734,7 +762,6 @@ services:
         - netfilter-mailcow
         - watchdog-mailcow
         - dockerapi-mailcow
-        - solr-mailcow
       environment:
         - TZ=${TZ}
       image: robbertkl/ipv6nat
@@ -766,7 +793,6 @@ volumes:
   mysql-socket-vol-1:
   redis-vol-1:
   rspamd-vol-1:
-  solr-vol-1:
   postfix-vol-1:
   crypt-vol-1:
   sogo-web-vol-1:
