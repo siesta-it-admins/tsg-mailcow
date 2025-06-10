@@ -325,6 +325,7 @@ adapt_new_options() {
   "WATCHDOG_EXTERNAL_CHECKS"
   "WATCHDOG_SUBJECT"
   "SKIP_CLAMD"
+  "SKIP_OLEFY"
   "SKIP_IP_CHECK"
   "ADDITIONAL_SAN"
   "DOVEADM_PORT"
@@ -724,9 +725,16 @@ detect_major_update() {
     # Add major versions here
     MAJOR_VERSIONS=(
       "2025-02"
+      "2025-03"
     )
 
-    current_version=$(git describe --tags $(git rev-list --tags --max-count=1))
+    current_version=""
+    if [[ -f "${SCRIPT_DIR}/data/web/inc/app_info.inc.php" ]]; then
+      current_version=$(grep 'MAILCOW_GIT_VERSION' ${SCRIPT_DIR}/data/web/inc/app_info.inc.php | sed -E 's/.*MAILCOW_GIT_VERSION="([^"]+)".*/\1/')
+    fi
+    if [[ -z "$current_version" ]]; then
+      return 1
+    fi
     release_url="https://github.com/mailcow/mailcow-dockerized/releases/tag"
 
     updates_to_apply=()
@@ -743,8 +751,7 @@ detect_major_update() {
         echo "$update - $release_url/$update"
       done
 
-      echo -e "\n⚠️  Please read the release notes before proceeding.\n"
-
+      echo -e "\nPlease read the release notes before proceeding."
       read -p "Do you want to proceed with the update? [y/n] " response
       if [[ "${response}" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
         echo "Proceeding with the update..."
@@ -857,8 +864,13 @@ while (($#)); do
       echo -e "\e[32mRunning in Developer mode...\e[0m"
       DEV=y
     ;;
+    --legacy)
+      CURRENT_BRANCH="$(cd "${SCRIPT_DIR}"; git rev-parse --abbrev-ref HEAD)"
+      NEW_BRANCH="legacy"
+    ;;
     --help|-h)
-    echo './update.sh [-c|--check, --check-tags, --ours, --gc, --nightly, --prefetch, --skip-start, --skip-ping-check, --stable, -f|--force, -d|--dev, -h|--help]
+    echo './update.sh [-c|--check, --check-tags, --ours, --gc, --nightly, --prefetch, --skip-start, --skip-ping-check, --stable, --legacy, -f|--force, -d|--dev, -h|--help]
+
   -c|--check           -   Check for updates and exit (exit codes => 0: update available, 3: no updates)
   --check-tags         -   Check for newer tags and exit (exit codes => 0: newer tag available, 3: no newer tag)
   --ours               -   Use merge strategy option "ours" to solve conflicts in favor of non-mailcow code (local changes over remote changes), not recommended!
@@ -867,7 +879,8 @@ while (($#)); do
   --prefetch           -   Only prefetch new images and exit (useful to prepare updates)
   --skip-start         -   Do not start mailcow after update
   --skip-ping-check    -   Skip ICMP Check to public DNS resolvers (Use it only if you'\''ve blocked any ICMP Connections to your mailcow machine)
-  --stable             -   Switch your mailcow updates to the stable (mailman3) branch. Default unless you changed it with --nightly.
+  --stable             -   Switch your mailcow updates to the stable (master) branch. Default unless you changed it with --nightly or --legacy.
+  --legacy             -   Switch your mailcow updates to the legacy branch. The legacy branch will only receive security updates until February 2026.
   -f|--force           -   Force update, do not ask questions
   -d|--dev             -   Enables Developer Mode (No Checkout of update.sh for tests)
 '
@@ -923,6 +936,7 @@ CONFIG_ARRAY=(
   "WATCHDOG_EXTERNAL_CHECKS"
   "WATCHDOG_SUBJECT"
   "SKIP_CLAMD"
+  "SKIP_OLEFY"
   "SKIP_IP_CHECK"
   "ADDITIONAL_SAN"
   "AUTODISCOVER_SAN"
@@ -1233,6 +1247,18 @@ for option in "${CONFIG_ARRAY[@]}"; do
       echo '# Prevent netfilter from setting an iptables/nftables rule to isolate the mailcow docker network - y/n' >> mailcow.conf
       echo '# CAUTION: Disabling this may expose container ports to other neighbors on the same subnet, even if the ports are bound to localhost' >> mailcow.conf
       echo 'DISABLE_NETFILTER_ISOLATION_RULE=n' >> mailcow.conf
+    fi
+  elif [[ "${option}" == "SKIP_CLAMD" ]]; then
+    if ! grep -q "${option}" mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Skip ClamAV (clamd-mailcow) anti-virus (Rspamd will auto-detect a missing ClamAV container) - y/n' >> mailcow.conf
+      echo 'SKIP_CLAMD=n' >> mailcow.conf
+    fi
+  elif [[ "${option}" == "SKIP_OLEFY" ]]; then
+    if ! grep -q "${option}" mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Skip Olefy (olefy-mailcow) anti-virus for Office documents (Rspamd will auto-detect a missing Olefy container) - y/n' >> mailcow.conf
+      echo 'SKIP_OLEFY=n' >> mailcow.conf
     fi
   elif [[ "${option}" == "REDISPASS" ]]; then
     if ! grep -q "${option}" mailcow.conf; then

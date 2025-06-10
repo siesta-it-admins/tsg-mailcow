@@ -234,7 +234,7 @@ external_checks() {
   diff_c=0
   THRESHOLD=${EXTERNAL_CHECKS_THRESHOLD}
   # Reduce error count by 2 after restarting an unhealthy container
-  GUID=$(mysql -u${DBUSER} -p${DBPASS} ${DBNAME} -e "SELECT version FROM versions WHERE application = 'GUID'" -BN)
+  GUID=$(mariadb --skip-ssl -u${DBUSER} -p${DBPASS} ${DBNAME} -e "SELECT version FROM versions WHERE application = 'GUID'" -BN)
   trap "[ ${err_count} -gt 1 ] && err_count=$(( ${err_count} - 2 ))" USR1
   while [ ${err_count} -lt ${THRESHOLD} ]; do
     err_c_cur=${err_count}
@@ -994,6 +994,7 @@ PID=$!
 echo "Spawned cert_checks with PID ${PID}"
 BACKGROUND_TASKS+=(${PID})
 
+if [[ "${SKIP_OLEFY}" =~ ^([nN][oO]|[nN])+$ ]]; then
 (
 while true; do
   if ! olefy_checks; then
@@ -1005,6 +1006,7 @@ done
 PID=$!
 echo "Spawned olefy_checks with PID ${PID}"
 BACKGROUND_TASKS+=(${PID})
+fi
 
 (
 while true; do
