@@ -429,6 +429,7 @@ services:
         unbound-mailcow:
           condition: service_healthy
         mailman-web:
+          condition: service_started
         postfix-tlspol-mailcow:
           condition: service_started
       volumes:
@@ -760,7 +761,7 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-mailcow
-    enable_ipv6: ${ENABLE_IPV6:-true}
+    enable_ipv6: true
     ipam:
       driver: default
       config:
