@@ -22,11 +22,28 @@ fi
 BRANCH="$(cd "${SCRIPT_DIR}" && git rev-parse --abbrev-ref HEAD)"
 
 MODULE_DIR="${SCRIPT_DIR}/_modules"
+# Calculate hash before fetch
+if [[ -d "${MODULE_DIR}" && -n "$(ls -A "${MODULE_DIR}" 2>/dev/null)" ]]; then
+  MODULES_HASH_BEFORE=$(find "${MODULE_DIR}" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | awk '{print $1}')
+else
+  MODULES_HASH_BEFORE="EMPTY"
+fi
+
+echo -e "\e[33mFetching latest _modules from origin/${BRANCH}…\e[0m"
+git fetch origin "${BRANCH}"
+git checkout "origin/${BRANCH}" -- _modules
+
 if [[ ! -d "${MODULE_DIR}" || -z "$(ls -A "${MODULE_DIR}")" ]]; then
-  echo -e "\e[33m_modules is missing or empty – fetching all Modules from origin/${BRANCH}…\e[0m"
-  git fetch origin "${BRANCH}"
-  git checkout "origin/${BRANCH}" -- _modules
-  echo -e "\e[33mDone. Please restart the script...\e[0m"
+  echo -e "\e[31mError: _modules is still missing or empty after fetch!\e[0m"
+  exit 2
+fi
+
+# Calculate hash after fetch
+MODULES_HASH_AFTER=$(find "${MODULE_DIR}" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | awk '{print $1}')
+
+# Check if modules changed
+if [[ "${MODULES_HASH_BEFORE}" != "${MODULES_HASH_AFTER}" ]]; then
+  echo -e "\e[33m_modules have been updated. Please restart the update script.\e[0m"
   exit 2
 fi
 
