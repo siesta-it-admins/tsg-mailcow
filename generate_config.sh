@@ -216,7 +216,7 @@ DJSECRET=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
 # ------------------------------
 # REDIS configuration
 # ------------------------------
-REDISPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
+REDISPASS=${MAILCOW_REDISPASS:-$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)}
 
 # ------------------------------
 # HTTP/S Bindings
