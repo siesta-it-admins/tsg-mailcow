@@ -74,7 +74,7 @@ services:
             - database
 
     unbound-mailcow:
-      image: ghcr.io/mailcow/unbound:1.25
+      image: ghcr.io/mailcow/unbound:1.25.1-1
       environment:
         - TZ=${TZ}
         - SKIP_UNBOUND_HEALTHCHECK=${SKIP_UNBOUND_HEALTHCHECK:-n}
@@ -281,7 +281,7 @@ services:
             - phpfpm
 
     sogo-mailcow:
-      image: ghcr.io/mailcow/sogo:5.12.5-3
+      image: ghcr.io/mailcow/sogo:5.12.8-1
       depends_on:
         - mailman-web
       environment:
@@ -508,7 +508,7 @@ services:
         - php-fpm-mailcow
         - sogo-mailcow
         - rspamd-mailcow
-      image: ghcr.io/mailcow/nginx:1.06
+      image: ghcr.io/mailcow/nginx:1.30.2-1
       dns:
         - ${IPV4_NETWORK:-172.19.199}.254
       environment:
